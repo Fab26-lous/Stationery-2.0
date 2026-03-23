@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Stationery POS</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -36,7 +39,7 @@
       margin: 0 auto;
     }
 
-    .card, .panel, .store-card, .main-card, .modal-content {
+    .card, .store-card, .main-card, .panel, .modal-content {
       background: var(--card);
       border: 1px solid var(--line);
       border-radius: var(--radius);
@@ -144,13 +147,11 @@
       gap: 12px;
     }
 
-    .form-grid .full {
-      grid-column: 1 / -1;
-    }
+    .form-grid .full { grid-column: 1 / -1; }
 
     .pin-grid {
       display: grid;
-      grid-template-columns: 1.2fr 1fr auto auto;
+      grid-template-columns: 1.3fr 1fr auto auto;
       gap: 10px;
       align-items: end;
       margin-top: 16px;
@@ -226,7 +227,6 @@
     .btn-warning { background: var(--warning); color: #fff; }
     .btn-danger { background: var(--danger); color: #fff; }
     .btn-wide { min-width: 180px; }
-
     .btn-mini {
       padding: 6px 10px;
       border-radius: 8px;
@@ -237,8 +237,7 @@
       cursor: pointer;
     }
 
-    .stock-info-box,
-    .adjustment-stock-info {
+    .stock-info-box, .adjustment-stock-info {
       padding: 12px 14px;
       border-radius: 12px;
       font-weight: 600;
@@ -259,4 +258,373 @@
 
     .summary-box {
       margin-top: 10px;
-      padding: 10px
+      padding: 10px 12px;
+      background: #f9fafb;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      font-weight: 600;
+    }
+
+    .muted { color: var(--muted); font-size: 0.92rem; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    th, td {
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      font-size: 0.94rem;
+      vertical-align: middle;
+    }
+
+    th {
+      background: #f9fafb;
+      color: #374151;
+      font-weight: 700;
+    }
+
+    .table-wrap { overflow-x: auto; }
+
+    .status-ok { color: #166534; font-weight: 700; }
+    .status-low { color: #92400e; font-weight: 700; }
+    .status-out { color: #991b1b; font-weight: 700; }
+
+    .modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.5);
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 999;
+    }
+
+    .modal-content {
+      width: 100%;
+      max-width: 1000px;
+      max-height: 92vh;
+      overflow-y: auto;
+      padding: 22px;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    @media (max-width: 960px) {
+      .form-grid { grid-template-columns: 1fr; }
+      .pin-grid { grid-template-columns: 1fr; }
+      body { padding: 14px; }
+      .header, .main-card, .modal-content, .store-card { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div class="header card">
+      <div class="brand">
+        <h1>Stationery POS</h1>
+        <p>Fast sales, stock adjustment, and expense tracking</p>
+      </div>
+      <div class="pending-box">Pending Sync: <span id="pending-count">0</span></div>
+    </div>
+
+    <div class="top-status-bar">
+      <div id="sync-status" class="sync-status info">Ready</div>
+    </div>
+
+    <div id="store-selection" class="store-card">
+      <h2>Select Store</h2>
+      <div class="store-buttons">
+        <button class="btn btn-primary" onclick="selectStore('store1')">One Stop</button>
+        <button class="btn btn-warning" onclick="selectStore('store2')">Golden</button>
+      </div>
+    </div>
+
+    <div id="pos-container" class="main-card hidden">
+      <div class="main-top">
+        <div>
+          <h2 id="store-name">Store POS</h2>
+          <div class="muted">PIN is required only at final submit</div>
+        </div>
+
+        <div class="toolbar">
+          <button class="btn btn-secondary" onclick="showStockLevels()">View Stock</button>
+          <button class="btn btn-warning btn-wide" onclick="showStockAdjustment()">Stock Adjustment</button>
+          <button class="btn btn-danger btn-wide" onclick="showExpenseModal()">Record Expense</button>
+        </div>
+      </div>
+
+      <div class="stack-layout">
+        <div class="panel">
+          <h3>New Sale</h3>
+
+          <form id="sale-form">
+            <div class="form-grid">
+              <div class="full">
+                <label for="item">Product</label>
+                <input id="item" list="item-list" type="text" placeholder="Search product name" autocomplete="off" />
+                <datalist id="item-list"></datalist>
+              </div>
+
+              <div class="full">
+                <div id="selected-stock-info" class="stock-info-box">Select an item to view stock</div>
+              </div>
+
+              <div>
+                <label for="unit">Unit</label>
+                <select id="unit">
+                  <option value="pc">pc</option>
+                  <option value="dz">dz</option>
+                  <option value="ct">ct</option>
+                </select>
+              </div>
+
+              <div>
+                <label for="quantity">Quantity</label>
+                <input id="quantity" type="number" step="any" min="0" />
+              </div>
+
+              <div>
+                <label for="price">Price</label>
+                <input id="price" class="money-input" type="text" inputmode="decimal" placeholder="0" />
+              </div>
+
+              <div>
+                <label for="discount">Discount</label>
+                <input id="discount" class="money-input" type="text" inputmode="decimal" value="0" />
+              </div>
+
+              <div>
+                <label for="extra">Extra</label>
+                <input id="extra" class="money-input" type="text" inputmode="decimal" value="0" />
+              </div>
+
+              <div>
+                <label for="payment-method">Payment Method</label>
+                <select id="payment-method">
+                  <option value="Cash">Cash</option>
+                  <option value="Mobile Money">Mobile Money</option>
+                  <option value="Bank">Bank</option>
+                  <option value="Credit">Credit</option>
+                </select>
+              </div>
+
+              <div class="full">
+                <label for="total">Total</label>
+                <input id="total" type="text" readonly />
+              </div>
+            </div>
+
+            <div class="action-row">
+              <button type="submit" class="btn btn-primary">Add to Sale</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="panel">
+          <h3>Current Sale Items</h3>
+
+          <div class="table-wrap">
+            <table id="sales-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Item</th>
+                  <th>Unit</th>
+                  <th>Qty</th>
+                  <th>Price</th>
+                  <th>Discount</th>
+                  <th>Extra</th>
+                  <th>Total</th>
+                  <th>Payment</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colspan="10" class="muted">No items added yet</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="pin-grid">
+            <div>
+              <label for="sales-submitted-by">Submitted By</label>
+              <select id="sales-submitted-by"></select>
+            </div>
+
+            <div>
+              <label for="sales-pin">PIN</label>
+              <input id="sales-pin" type="password" inputmode="numeric" placeholder="Enter PIN" />
+            </div>
+
+            <button id="submit-all-btn" class="btn btn-success hidden" onclick="submitAllSales()">Submit Sales</button>
+            <button id="clear-all-btn" class="btn btn-secondary hidden" onclick="clearAllSales()">Clear</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="stock-modal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <h3>Stock Levels</h3>
+            <div class="muted">One Stop and Golden stock overview</div>
+          </div>
+          <button class="btn btn-secondary" onclick="hideStockLevels()">Close</button>
+        </div>
+
+        <div class="search-row">
+          <input id="stock-search" type="text" placeholder="Search product name" />
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>One Stop</th>
+                <th>Golden</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="stock-table-body"></tbody>
+          </table>
+        </div>
+
+        <div id="stock-summary" class="summary-box">Products: 0 | Out: 0 | Low: 0</div>
+      </div>
+    </div>
+
+    <div id="stock-adjustment-modal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <div>
+            <h3>Stock Adjustment</h3>
+            <div class="muted">Store: <span id="adjustment-store-name"></span></div>
+          </div>
+          <button class="btn btn-secondary" onclick="hideStockAdjustment()">Close</button>
+        </div>
+
+        <div class="search-row">
+          <input id="adjustment-search" list="adjustment-item-list" type="text" placeholder="Search product name" autocomplete="off" />
+          <datalist id="adjustment-item-list"></datalist>
+          <button class="btn btn-primary" onclick="addItemToAdjustment()">Add Item</button>
+        </div>
+
+        <div id="adjustment-stock-info" class="adjustment-stock-info">Search an item to view stock</div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Unit</th>
+                <th>Adjustment</th>
+                <th>Quantity</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="adjustment-table-body">
+              <tr>
+                <td colspan="5" class="muted">No items added yet</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="adjustment-summary" class="summary-box">Items to adjust: 0</div>
+
+        <div class="pin-grid">
+          <div>
+            <label for="adjustment-submitted-by">Submitted By</label>
+            <select id="adjustment-submitted-by"></select>
+          </div>
+
+          <div>
+            <label for="adjustment-pin">PIN</label>
+            <input id="adjustment-pin" type="password" inputmode="numeric" placeholder="Enter PIN" />
+          </div>
+
+          <button class="btn btn-success" onclick="submitStockAdjustment()">Submit Adjustment</button>
+          <button class="btn btn-secondary" onclick="clearAdjustments()">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="expense-modal" class="modal">
+      <div class="modal-content" style="max-width: 720px;">
+        <div class="modal-header">
+          <div>
+            <h3>Record Expense</h3>
+            <div class="muted">Expense will also capture who submitted it</div>
+          </div>
+          <button class="btn btn-secondary" onclick="hideExpenseModal()">Close</button>
+        </div>
+
+        <div class="form-grid">
+          <div>
+            <label for="expense-category">Category</label>
+            <input id="expense-category" type="text" placeholder="e.g. Transport, Cleaning, Airtime" />
+          </div>
+
+          <div>
+            <label for="expense-amount">Amount</label>
+            <input id="expense-amount" class="money-input" type="text" inputmode="decimal" placeholder="0" />
+          </div>
+
+          <div>
+            <label for="expense-payment">Payment Method</label>
+            <select id="expense-payment">
+              <option value="Cash">Cash</option>
+              <option value="Mobile Money">Mobile Money</option>
+              <option value="Bank">Bank</option>
+            </select>
+          </div>
+
+          <div class="full">
+            <label for="expense-description">Description</label>
+            <textarea id="expense-description" placeholder="Optional description"></textarea>
+          </div>
+        </div>
+
+        <div class="pin-grid">
+          <div>
+            <label for="expense-submitted-by">Submitted By</label>
+            <select id="expense-submitted-by"></select>
+          </div>
+
+          <div>
+            <label for="expense-pin">PIN</label>
+            <input id="expense-pin" type="password" inputmode="numeric" placeholder="Enter PIN" />
+          </div>
+
+          <button class="btn btn-success" onclick="submitExpense()">Save Expense</button>
+          <button class="btn btn-secondary" onclick="hideExpenseModal()">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
