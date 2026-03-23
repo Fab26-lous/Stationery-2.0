@@ -215,48 +215,101 @@ async function selectStore(storeId) {
   document.getElementById('store-name').textContent = stores[storeId].name + ' POS';
   setStatus(`Loading ${storeName()} data...`, 'warning');
 
-  await Promise.all([loadProducts(), loadUsers()]);
+  const productsLoaded = await loadProducts();
+  const usersLoaded = await loadUsers();
+
+  console.log('productsLoaded:', productsLoaded);
+  console.log('usersLoaded:', usersLoaded);
+
   processQueue();
 }
 
 async function loadProducts() {
   try {
+    setStatus('Loading products...', 'warning');
+
     const res = await apiRequest('products', { store: storeName() });
+    console.log('Products raw response:', res);
 
     if (!res || !res.ok) {
       throw new Error(res?.error || 'Failed to load products');
     }
 
     if (!Array.isArray(res.data)) {
-      throw new Error('Invalid product feed');
+      throw new Error('Products response is not an array');
     }
 
-    products = res.data.map(p => ({
-      id: p.productId,
-      name: p.productName,
-      prices: {
-        ct: Number(p.priceCt) || 0,
-        dz: Number(p.priceDz) || 0,
-        pc: Number(p.pricePc) || 0
-      },
-      stock: Number(p.stock) || 0,
-      stockStore1: Number(p.stockOneStop) || 0,
-      stockStore2: Number(p.stockGolden) || 0,
-      countingUnit: p.countingUnit || 'pc'
-    }));
+    products = res.data.map((p, index) => {
+      const product = {
+        id: p.productId || `row_${index + 1}`,
+        name: String(p.productName || '').trim(),
+        prices: {
+          ct: Number(p.priceCt) || 0,
+          dz: Number(p.priceDz) || 0,
+          pc: Number(p.pricePc) || 0
+        },
+        stock: Number(p.stock) || 0,
+        stockStore1: Number(p.stockOneStop) || 0,
+        stockStore2: Number(p.stockGolden) || 0,
+        countingUnit: p.countingUnit || 'pc'
+      };
+      return product;
+    }).filter(p => p.name !== '');
+
+    console.log('Mapped products:', products);
 
     populateSalesDatalist();
     populateAdjustmentDatalist();
+
     setStatus(`Loaded ${products.length} products`, 'success');
+    return true;
   } catch (error) {
     console.error('loadProducts error:', error);
     setStatus('Failed to load products: ' + error.message, 'error');
+    return false;
   }
+}
+
+function populateSalesDatalist() {
+  const dl = document.getElementById('item-list');
+  if (!dl) {
+    console.warn('item-list datalist not found');
+    return;
+  }
+
+  dl.innerHTML = '';
+
+  products.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    dl.appendChild(opt);
+  });
+
+  console.log(`Sales datalist populated with ${products.length} items`);
+}
+
+function populateAdjustmentDatalist() {
+  const dl = document.getElementById('adjustment-item-list');
+  if (!dl) {
+    console.warn('adjustment-item-list datalist not found');
+    return;
+  }
+
+  dl.innerHTML = '';
+
+  products.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    dl.appendChild(opt);
+  });
+
+  console.log(`Adjustment datalist populated with ${products.length} items`);
 }
 
 async function loadUsers() {
   try {
     const res = await apiRequest('users', { store: storeName() });
+    console.log('Users raw response:', res);
 
     if (!res || !res.ok) {
       throw new Error(res?.error || 'Failed to load users');
@@ -264,9 +317,11 @@ async function loadUsers() {
 
     users = Array.isArray(res.data) ? res.data : [];
     populateUserSelects();
+    return true;
   } catch (error) {
     console.error('loadUsers error:', error);
     setStatus('Failed to load users: ' + error.message, 'error');
+    return false;
   }
 }
 
