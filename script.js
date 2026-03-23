@@ -1,4 +1,4 @@
-const POS_API_URL = 'https://script.google.com/macros/s/AKfycbxsQR3z1P7ND5OOFf16PbfeYXpKNUadalDQ5EgnqVGFubbXDFsjXCfuCdPEEQkpQ9F-/exec';
+const POS_API_URL = 'https://script.google.com/macros/s/AKfycbxo1aKnxNNqd23wgJ2Dr5OLo9UE237vPDMHJlQLWAknQ19yrh6q1C7gpHalSJhX2_UfiA/exec';
 const LOCAL_QUEUE_KEY = 'stationery_pos_sync_queue_v4';
 const LAST_SELECTED_USER_KEY = 'stationery_pos_last_user_v1';
 
