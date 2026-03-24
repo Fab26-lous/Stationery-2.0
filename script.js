@@ -113,17 +113,48 @@ async function apiRequest(action, data = {}) {
   console.log(`API Request: ${action}`, data);
   
   try {
+    let response;
     const url = new URL(POS_API_URL);
-    url.searchParams.set('action', action);
     
-    if (data.store) {
-      url.searchParams.set('store', data.store);
+    // Define which actions should be GET vs POST
+    const getActions = ['health', 'products', 'stock', 'users'];
+    const postActions = ['sales', 'adjustments', 'cashout']; // Note: 'adjustments' not 'adjustment'
+    
+    if (getActions.includes(action)) {
+      // GET request for reading data
+      url.searchParams.set('action', action);
+      
+      if (data.store) {
+        url.searchParams.set('store', data.store);
+      }
+      
+      response = await fetch(url.toString(), {
+        method: 'GET',
+        headers: { Accept: 'application/json' }
+      });
+    } else if (postActions.includes(action)) {
+      // POST request for writing data
+      const payload = { action, ...data };
+      
+      response = await fetch(POS_API_URL, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+    } else {
+      // Default to POST for unknown actions
+      const payload = { action, ...data };
+      
+      response = await fetch(POS_API_URL, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
     }
-    
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      headers: { Accept: 'application/json' }
-    });
 
     const text = await response.text();
     console.log(`API Response (${action}):`, text.substring(0, 500));
@@ -132,6 +163,7 @@ async function apiRequest(action, data = {}) {
     try {
       result = JSON.parse(text);
     } catch (parseErr) {
+      console.error('JSON Parse Error:', parseErr);
       throw new Error('Server did not return valid JSON');
     }
 
@@ -161,10 +193,12 @@ async function processQueue() {
     setStatus(`Syncing ${queue.length} pending item(s)...`, 'warning');
 
     for (const job of queue) {
+      console.log(`Processing queue item: ${job.action}`, job.payload);
       const result = await apiRequest(job.action, job.payload);
 
-      if (result.ok) {
+      if (result && result.ok) {
         removeFromQueue(job.id);
+        console.log(`Successfully synced: ${job.action}`);
       } else {
         console.error('Queue sync failed:', job, result);
         setStatus(`${getQueue().length} pending. Sync will retry automatically.`, 'error');
@@ -178,6 +212,9 @@ async function processQueue() {
     if (currentStore) {
       loadProducts();
     }
+  } catch (error) {
+    console.error('Queue processing error:', error);
+    setStatus('Sync failed, will retry', 'error');
   } finally {
     isSyncing = false;
   }
@@ -205,20 +242,41 @@ async function selectStore(storeId) {
   document.getElementById('store-name').textContent = stores[storeId].name + ' POS';
   setStatus(`Loading ${storeName()} data...`, 'warning');
 
-  await loadProducts();
-  loadMockUsers();
+  await Promise.all([loadProducts(), loadUsers()]);
   processQueue();
+}
+
+async function loadUsers() {
+  try {
+    console.log(`Loading users for store: ${storeName()}`);
+    const res = await apiRequest('users', { store: storeName() });
+
+    if (!res || !res.ok) {
+      console.log('Users API failed, using mock users');
+      loadMockUsers();
+      return;
+    }
+
+    users = Array.isArray(res.data) ? res.data : [];
+    console.log(`Loaded ${users.length} users from API`);
+    populateUserSelects();
+    setStatus(`Loaded ${users.length} users`, 'success');
+  } catch (error) {
+    console.error('loadUsers error:', error);
+    loadMockUsers();
+  }
 }
 
 function loadMockUsers() {
   users = [
     { username: 'admin', role: 'Administrator' },
+    { username: 'manager', role: 'Manager' },
     { username: 'cashier1', role: 'Cashier' },
-    { username: 'cashier2', role: 'Cashier' },
-    { username: 'manager', role: 'Manager' }
+    { username: 'cashier2', role: 'Cashier' }
   ];
   populateUserSelects();
   console.log('Loaded mock users:', users);
+  setStatus('Using demo users (API not available)', 'warning');
 }
 
 async function loadProducts() {
@@ -241,19 +299,19 @@ async function loadProducts() {
     console.log(`Received ${res.data.length} products from API`);
     console.log('First product sample:', res.data[0]);
 
-    // Map products with all possible field variations
+    // Map products from API response
     products = res.data.map((p, index) => ({
-      id: p.productId || p.id || p.ProductId || index,
-      name: p.productName || p.name || p.ProductName || `Product ${index + 1}`,
+      id: p.productId || index,
+      name: p.productName,
       prices: {
-        ct: Number(p.priceCt || p.PriceCt || p.ct_price || 0),
-        dz: Number(p.priceDz || p.PriceDz || p.dz_price || 0),
-        pc: Number(p.pricePc || p.PricePc || p.price || p.Price || p.pc_price || 0)
+        ct: Number(p.priceCt) || 0,
+        dz: Number(p.priceDz) || 0,
+        pc: Number(p.pricePc) || 0
       },
-      stock: Number(p.stock || p.Stock || 0),
-      stockStore1: Number(p.stockOneStop || p.stock_store1 || p.StockOneStop || 0),
-      stockStore2: Number(p.stockGolden || p.stock_store2 || p.StockGolden || 0),
-      countingUnit: p.countingUnit || p.unit || 'pc'
+      stock: p.stock || 0,
+      stockStore1: Number(p.stockOneStop) || 0,
+      stockStore2: Number(p.stockGolden) || 0,
+      countingUnit: p.countingUnit || 'pc'
     }));
 
     console.log(`Mapped ${products.length} products`);
@@ -297,24 +355,6 @@ function loadDemoProducts() {
       stock: 150,
       stockStore1: 90,
       stockStore2: 60,
-      countingUnit: 'pc'
-    },
-    {
-      id: '4',
-      name: 'Ruler 30cm',
-      prices: { ct: 2000, dz: 19000, pc: 200 },
-      stock: 80,
-      stockStore1: 50,
-      stockStore2: 30,
-      countingUnit: 'pc'
-    },
-    {
-      id: '5',
-      name: 'Stapler',
-      prices: { ct: 8000, dz: 78000, pc: 850 },
-      stock: 25,
-      stockStore1: 15,
-      stockStore2: 10,
       countingUnit: 'pc'
     }
   ];
@@ -556,7 +596,7 @@ function updateSalesTable() {
   tbody.innerHTML = '';
 
   if (!currentSales.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="muted">No items added yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="muted">No items added yet</td> </tr>';
   } else {
     let grandTotal = 0;
 
@@ -867,7 +907,7 @@ function submitStockAdjustment() {
     store: storeName(),
     submittedBy,
     userPin,
-    adjustments: adjustmentItems,
+    items: adjustmentItems,  // Note: backend expects 'items'
     timestamp: new Date().toISOString()
   };
 
@@ -876,7 +916,7 @@ function submitStockAdjustment() {
   updateAdjustmentTable();
   clearPin(pinId);
 
-  queueAndSync('adjustment', payload, `${count} adjustment(s) queued.`);
+  queueAndSync('adjustments', payload, `${count} adjustment(s) queued.`);
   hideStockAdjustment();
 }
 
@@ -918,7 +958,8 @@ function submitExpense() {
     amount,
     paymentMethod,
     description,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    cashoutType: 'Operating_Expense'  // Add this for the backend
   };
 
   clearPin(pinId);
@@ -929,7 +970,7 @@ function submitExpense() {
   document.getElementById('expense-amount').value = '';
   document.getElementById('expense-description').value = '';
 
-  queueAndSync('expense', payload, `Expense of ${formatMoney(amount)} queued.`);
+  queueAndSync('cashout', payload, `Expense of ${formatMoney(amount)} queued.`);
 }
 
 // Add event listeners for item selection
