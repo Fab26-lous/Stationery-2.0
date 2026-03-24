@@ -244,38 +244,36 @@ async function selectStore(storeId) {
   await Promise.all([loadProducts(), loadUsers()]);
   processQueue();
 }
-
 async function loadUsers() {
   try {
     console.log(`Loading users for store: ${storeName()}`);
+
     const res = await apiRequest('users', { store: storeName() });
 
     if (!res || !res.ok) {
-      console.log('Users API failed, using mock users');
-      loadMockUsers();
+      users = [];
+      populateUserSelects();
+      setStatus(res?.error || 'Failed to load users from sheet', 'error');
       return;
     }
 
     users = Array.isArray(res.data) ? res.data : [];
+
+    if (!users.length) {
+      populateUserSelects();
+      setStatus(`No active users found for ${storeName()}`, 'warning');
+      return;
+    }
+
     console.log(`Loaded ${users.length} users from API`);
     populateUserSelects();
-    setStatus(`Loaded ${users.length} users`, 'success');
+    setStatus(`Loaded ${users.length} user(s)`, 'success');
   } catch (error) {
     console.error('loadUsers error:', error);
-    loadMockUsers();
+    users = [];
+    populateUserSelects();
+    setStatus('Error loading users from sheet', 'error');
   }
-}
-
-function loadMockUsers() {
-  users = [
-    { username: 'admin', role: 'Administrator' },
-    { username: 'manager', role: 'Manager' },
-    { username: 'cashier1', role: 'Cashier' },
-    { username: 'cashier2', role: 'Cashier' }
-  ];
-  populateUserSelects();
-  console.log('Loaded mock users:', users);
-  setStatus('Using demo users (API not available)', 'warning');
 }
 
 async function loadProducts() {
@@ -366,7 +364,7 @@ function loadDemoProducts() {
 }
 
 function populateUserSelects() {
-  const selects = [
+  const selectIds = [
     'sales-submitted-by',
     'adjustment-submitted-by',
     'expense-submitted-by'
@@ -374,7 +372,7 @@ function populateUserSelects() {
 
   const remembered = localStorage.getItem(LAST_SELECTED_USER_KEY + '_' + storeName()) || '';
 
-  selects.forEach(id => {
+  selectIds.forEach(id => {
     const select = document.getElementById(id);
     if (!select) return;
 
@@ -383,7 +381,9 @@ function populateUserSelects() {
     users.forEach(user => {
       const option = document.createElement('option');
       option.value = user.username;
-      option.textContent = user.username + (user.role ? ` (${user.role})` : '');
+      option.textContent = user.role
+        ? `${user.username} (${user.role})`
+        : user.username;
       select.appendChild(option);
     });
 
@@ -392,14 +392,15 @@ function populateUserSelects() {
     }
 
     select.onchange = function () {
-      if (this.value) {
-        localStorage.setItem(LAST_SELECTED_USER_KEY + '_' + storeName(), this.value);
-        mirrorSelectedUser(this.value);
+      const selectedUser = this.value || '';
+      if (selectedUser) {
+        localStorage.setItem(LAST_SELECTED_USER_KEY + '_' + storeName(), selectedUser);
+        mirrorSelectedUser(selectedUser);
       }
     };
   });
 
-  if (remembered) {
+  if (remembered && users.some(u => u.username === remembered)) {
     mirrorSelectedUser(remembered);
   }
 }
