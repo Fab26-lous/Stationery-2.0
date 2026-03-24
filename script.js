@@ -128,10 +128,13 @@ async function apiRequest(action, data = {}) {
         url.searchParams.set('store', data.store);
       }
       
-      response = await fetch(url.toString(), {
-        method: 'GET',
-        headers: { Accept: 'application/json' }
-      });
+     response = await fetch(POS_API_URL, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'text/plain;charset=utf-8'
+  },
+  body: JSON.stringify(payload)
+});
     } else if (postActions.includes(action)) {
       // POST request for writing data
       const payload = { action, ...data };
