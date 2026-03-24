@@ -20,6 +20,7 @@ function setStatus(message, type = 'info') {
   if (!el) return;
   el.textContent = message;
   el.className = 'sync-status ' + type;
+  console.log(`[Status] ${type}: ${message}`);
 }
 
 function storeName() {
@@ -77,72 +78,61 @@ function parseMoney(value) {
 function formatMoney(value) {
   const n = Number(value || 0);
   if (!isFinite(n)) return '0';
-
-  const hasDecimals = Math.round(n * 100) !== Math.round(n) * 100;
   return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: hasDecimals ? 2 : 0,
+    minimumFractionDigits: 0,
     maximumFractionDigits: 2
   }).format(n);
 }
 
 function attachMoneyFormatting() {
   document.querySelectorAll('.money-input').forEach(input => {
-    input.addEventListener('focus', function () {
-      this.value = String(parseMoney(this.value) || '');
-    });
-
-    input.addEventListener('blur', function () {
-      const n = parseMoney(this.value);
-      this.value = this.value.trim() === '' ? '' : formatMoney(n);
-      if (['price', 'discount', 'extra'].includes(this.id)) {
-        calculateTotal();
-      }
-    });
-
-    input.addEventListener('input', function () {
-      this.value = this.value.replace(/[^\d.,-]/g, '');
-      if (['price', 'discount', 'extra'].includes(this.id)) {
-        calculateTotal();
-      }
-    });
+    input.removeEventListener('blur', handleMoneyBlur);
+    input.removeEventListener('focus', handleMoneyFocus);
+    input.addEventListener('focus', handleMoneyFocus);
+    input.addEventListener('blur', handleMoneyBlur);
   });
 }
 
-async function apiRequest(action, data = {}) {
-  const readActions = ['health', 'products', 'stock'];
+function handleMoneyFocus() {
+  this.value = String(parseMoney(this.value) || '');
+}
 
-  try {
-    let response;
-
-    if (readActions.includes(action)) {
-      const url = new URL(POS_API_URL);
-      url.searchParams.set('action', action);
-
-      if (data.store) {
-        url.searchParams.set('store', data.store);
-      }
-
-      response = await fetch(url.toString(), {
-        method: 'GET',
-        headers: { Accept: 'application/json' }
-      });
+function handleMoneyBlur() {
+  const n = parseMoney(this.value);
+  this.value = this.value.trim() === '' ? '' : formatMoney(n);
+  if (['price', 'discount', 'extra', 'expense-amount'].includes(this.id)) {
+    if (this.id === 'expense-amount') {
+      // Handle expense calculation if needed
     } else {
-      const payload = { action, ...data };
-
-      response = await fetch(POS_API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload)
-      });
+      calculateTotal();
     }
+  }
+}
+
+async function apiRequest(action, data = {}) {
+  console.log(`API Request: ${action}`, data);
+  
+  try {
+    const url = new URL(POS_API_URL);
+    url.searchParams.set('action', action);
+    
+    if (data.store) {
+      url.searchParams.set('store', data.store);
+    }
+    
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: { Accept: 'application/json' }
+    });
 
     const text = await response.text();
+    console.log(`API Response (${action}):`, text.substring(0, 500));
 
     let result;
     try {
       result = JSON.parse(text);
     } catch (parseErr) {
-      throw new Error('Server did not return JSON: ' + text);
+      throw new Error('Server did not return valid JSON');
     }
 
     if (!response.ok) {
@@ -216,11 +206,10 @@ async function selectStore(storeId) {
   setStatus(`Loading ${storeName()} data...`, 'warning');
 
   await loadProducts();
-  loadMockUsers(); // Use mock users instead of API call
+  loadMockUsers();
   processQueue();
 }
 
-// Mock users since the API doesn't support users endpoint
 function loadMockUsers() {
   users = [
     { username: 'admin', role: 'Administrator' },
@@ -229,75 +218,67 @@ function loadMockUsers() {
     { username: 'manager', role: 'Manager' }
   ];
   populateUserSelects();
-  setStatus('Using demo users', 'info');
+  console.log('Loaded mock users:', users);
 }
 
 async function loadProducts() {
   try {
-    console.log('Loading products for store:', storeName());
+    console.log(`Loading products for store: ${storeName()}`);
     const res = await apiRequest('products', { store: storeName() });
 
-    console.log('API Response:', res);
-
     if (!res || !res.ok) {
-      throw new Error(res?.error || 'Failed to load products');
+      console.log('API failed, using demo products');
+      loadDemoProducts();
+      return;
     }
 
-    if (!Array.isArray(res.data)) {
-      throw new Error('Invalid product feed');
+    if (!Array.isArray(res.data) || res.data.length === 0) {
+      console.log('No products from API, using demo products');
+      loadDemoProducts();
+      return;
     }
 
-    // Log first product to see structure
-    if (res.data.length > 0) {
-      console.log('First product data structure:', res.data[0]);
-    }
+    console.log(`Received ${res.data.length} products from API`);
+    console.log('First product sample:', res.data[0]);
 
-    // FIXED: Properly map the product data with all possible field names
-    products = res.data.map(p => {
-      // Debug each product mapping
-      const mappedProduct = {
-        id: p.productId || p.id || p.ProductId,
-        name: p.productName || p.name || p.ProductName || 'Unknown',
-        prices: {
-          ct: Number(p.priceCt) || Number(p.PriceCt) || 0,
-          dz: Number(p.priceDz) || Number(p.PriceDz) || 0,
-          pc: Number(p.pricePc) || Number(p.price) || Number(p.Price) || 0
-        },
-        stock: Number(p.stock) || 0,
-        stockStore1: Number(p.stockOneStop) || Number(p.stock_store1) || Number(p.StockOneStop) || 0,
-        stockStore2: Number(p.stockGolden) || Number(p.stock_store2) || Number(p.StockGolden) || 0,
-        countingUnit: p.countingUnit || p.unit || p.CountingUnit || 'pc'
-      };
-      
-      console.log(`Mapped product: ${mappedProduct.name} - Price PC: ${mappedProduct.prices.pc}`);
-      return mappedProduct;
-    });
+    // Map products with all possible field variations
+    products = res.data.map((p, index) => ({
+      id: p.productId || p.id || p.ProductId || index,
+      name: p.productName || p.name || p.ProductName || `Product ${index + 1}`,
+      prices: {
+        ct: Number(p.priceCt || p.PriceCt || p.ct_price || 0),
+        dz: Number(p.priceDz || p.PriceDz || p.dz_price || 0),
+        pc: Number(p.pricePc || p.PricePc || p.price || p.Price || p.pc_price || 0)
+      },
+      stock: Number(p.stock || p.Stock || 0),
+      stockStore1: Number(p.stockOneStop || p.stock_store1 || p.StockOneStop || 0),
+      stockStore2: Number(p.stockGolden || p.stock_store2 || p.StockGolden || 0),
+      countingUnit: p.countingUnit || p.unit || 'pc'
+    }));
 
-    console.log('Total products loaded:', products.length);
-    console.log('First product details:', products[0]);
+    console.log(`Mapped ${products.length} products`);
+    console.log('First mapped product:', products[0]);
     
     populateSalesDatalist();
     populateAdjustmentDatalist();
     setStatus(`Loaded ${products.length} products`, 'success');
+    
   } catch (error) {
     console.error('loadProducts error:', error);
-    setStatus('Failed to load products: ' + error.message, 'error');
-    // Load demo products if API fails
     loadDemoProducts();
   }
 }
 
-// Fallback demo products for testing
 function loadDemoProducts() {
-  console.log('Loading demo products');
+  console.log('Loading DEMO products');
   products = [
     {
       id: '1',
       name: 'Notebook A4',
       prices: { ct: 5000, dz: 48000, pc: 550 },
       stock: 100,
-      stockStore1: 100,
-      stockStore2: 80,
+      stockStore1: 45,
+      stockStore2: 55,
       countingUnit: 'pc'
     },
     {
@@ -305,8 +286,8 @@ function loadDemoProducts() {
       name: 'Pen Blue',
       prices: { ct: 2500, dz: 24000, pc: 250 },
       stock: 200,
-      stockStore1: 200,
-      stockStore2: 150,
+      stockStore1: 120,
+      stockStore2: 80,
       countingUnit: 'pc'
     },
     {
@@ -314,20 +295,35 @@ function loadDemoProducts() {
       name: 'Eraser',
       prices: { ct: 1000, dz: 9000, pc: 100 },
       stock: 150,
-      stockStore1: 150,
-      stockStore2: 120,
+      stockStore1: 90,
+      stockStore2: 60,
+      countingUnit: 'pc'
+    },
+    {
+      id: '4',
+      name: 'Ruler 30cm',
+      prices: { ct: 2000, dz: 19000, pc: 200 },
+      stock: 80,
+      stockStore1: 50,
+      stockStore2: 30,
+      countingUnit: 'pc'
+    },
+    {
+      id: '5',
+      name: 'Stapler',
+      prices: { ct: 8000, dz: 78000, pc: 850 },
+      stock: 25,
+      stockStore1: 15,
+      stockStore2: 10,
       countingUnit: 'pc'
     }
   ];
   
+  console.log(`Loaded ${products.length} DEMO products`);
+  setStatus('Using DEMO products', 'warning');
+  
   populateSalesDatalist();
   populateAdjustmentDatalist();
-  setStatus('Using demo products (API failed)', 'warning');
-}
-
-function loadUsers() {
-  // This function is kept for compatibility but not used
-  loadMockUsers();
 }
 
 function populateUserSelects() {
@@ -383,8 +379,12 @@ function mirrorSelectedUser(username) {
 
 function populateSalesDatalist() {
   const dl = document.getElementById('item-list');
-  if (!dl) return;
+  if (!dl) {
+    console.error('item-list datalist not found');
+    return;
+  }
   dl.innerHTML = '';
+  console.log(`Populating sales datalist with ${products.length} products`);
 
   products.forEach(p => {
     const opt = document.createElement('option');
@@ -417,7 +417,7 @@ function updateSelectedStockInfo() {
 
   const product = products.find(p => p.name.toLowerCase() === itemName);
   if (!product) {
-    box.textContent = 'Product not found in feed';
+    box.textContent = 'Product not found';
     return;
   }
 
@@ -440,7 +440,7 @@ function updateAdjustmentStockInfo() {
 
   const product = products.find(p => p.name.toLowerCase() === itemName);
   if (!product) {
-    box.textContent = 'Product not found in feed';
+    box.textContent = 'Product not found';
     return;
   }
 
@@ -456,11 +456,11 @@ function updatePrice() {
   const unit = document.getElementById('unit').value;
   const product = products.find(p => p.name.toLowerCase() === itemName);
 
-  console.log('Updating price for:', itemName, 'unit:', unit, 'product:', product);
+  console.log(`updatePrice - Item: ${itemName}, Unit: ${unit}, Product found: ${!!product}`);
 
   if (product && product.prices) {
     const priceValue = product.prices[unit] || 0;
-    console.log('Price value:', priceValue);
+    console.log(`Price for ${unit}: ${priceValue}`);
     document.getElementById('price').value = priceValue > 0 ? formatMoney(priceValue) : '';
   } else {
     document.getElementById('price').value = '';
@@ -482,14 +482,71 @@ function calculateTotal() {
 }
 
 function resetForm() {
-  document.getElementById('sale-form').reset();
+  const form = document.getElementById('sale-form');
+  if (form) form.reset();
   document.getElementById('price').value = '';
   document.getElementById('discount').value = '0';
   document.getElementById('extra').value = '0';
   document.getElementById('total').value = '';
-
+  document.getElementById('quantity').value = '';
+  
   const box = document.getElementById('selected-stock-info');
   if (box) box.textContent = 'Select an item to view stock';
+}
+
+// Handle form submission
+document.addEventListener('DOMContentLoaded', function() {
+  const saleForm = document.getElementById('sale-form');
+  if (saleForm) {
+    saleForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      addToSale();
+    });
+  }
+  
+  attachMoneyFormatting();
+  console.log('POS System initialized');
+});
+
+function addToSale() {
+  const item = document.getElementById('item').value.trim();
+  const unit = document.getElementById('unit').value;
+  const quantity = parseFloat(document.getElementById('quantity').value);
+  const price = parseMoney(document.getElementById('price').value);
+  const discount = parseMoney(document.getElementById('discount').value);
+  const extra = parseMoney(document.getElementById('extra').value);
+  const paymentMethod = document.getElementById('payment-method').value;
+  const total = (quantity * price) - discount + extra;
+
+  if (!item) {
+    setStatus('Please select an item', 'error');
+    return;
+  }
+
+  if (!quantity || quantity <= 0) {
+    setStatus('Please enter a valid quantity', 'error');
+    return;
+  }
+
+  if (!price || price <= 0) {
+    setStatus('Please enter a valid price', 'error');
+    return;
+  }
+
+  currentSales.push({
+    item,
+    unit,
+    quantity,
+    price,
+    discount,
+    extra,
+    total,
+    paymentMethod
+  });
+
+  updateSalesTable();
+  resetForm();
+  setStatus(`Added ${quantity} ${unit} of ${item} to sale`, 'success');
 }
 
 function updateSalesTable() {
@@ -725,12 +782,176 @@ function addItemToAdjustment() {
 }
 
 function updateAdjustmentTable() {
-  // Add this function if it doesn't exist
-  console.log('Adjustment items:', adjustmentItems);
+  const tbody = document.getElementById('adjustment-table-body');
+  if (!tbody) return;
+
+  tbody.innerHTML = '';
+
+  if (!adjustmentItems.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">No items added yet</td></tr>';
+  } else {
+    adjustmentItems.forEach((item, index) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${item.name}</td>
+        <td>
+          <select onchange="updateAdjustmentUnit(${index}, this.value)">
+            <option value="pc" ${item.unit === 'pc' ? 'selected' : ''}>pc</option>
+            <option value="dz" ${item.unit === 'dz' ? 'selected' : ''}>dz</option>
+            <option value="ct" ${item.unit === 'ct' ? 'selected' : ''}>ct</option>
+          </select>
+        </td>
+        <td>
+          <select onchange="updateAdjustmentType(${index}, this.value)">
+            <option value="add" ${item.adjustmentType === 'add' ? 'selected' : ''}>Add Stock</option>
+            <option value="remove" ${item.adjustmentType === 'remove' ? 'selected' : ''}>Remove Stock</option>
+          </select>
+        </td>
+        <td>
+          <input type="number" value="${item.quantity}" onchange="updateAdjustmentQuantity(${index}, this.value)" placeholder="Quantity">
+        </td>
+        <td><button class="btn-mini" onclick="removeAdjustmentItem(${index})">×</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  const summary = document.getElementById('adjustment-summary');
+  if (summary) {
+    summary.textContent = `Items to adjust: ${adjustmentItems.length}`;
+  }
 }
 
-// Initialize on page load
+function updateAdjustmentUnit(index, unit) {
+  if (adjustmentItems[index]) {
+    adjustmentItems[index].unit = unit;
+  }
+}
+
+function updateAdjustmentType(index, type) {
+  if (adjustmentItems[index]) {
+    adjustmentItems[index].adjustmentType = type;
+  }
+}
+
+function updateAdjustmentQuantity(index, quantity) {
+  if (adjustmentItems[index]) {
+    adjustmentItems[index].quantity = parseFloat(quantity) || 0;
+  }
+}
+
+function removeAdjustmentItem(index) {
+  adjustmentItems.splice(index, 1);
+  updateAdjustmentTable();
+}
+
+function clearAdjustments() {
+  adjustmentItems = [];
+  updateAdjustmentTable();
+  setStatus('Adjustment cleared', 'info');
+}
+
+function submitStockAdjustment() {
+  if (!adjustmentItems.length) {
+    setStatus('No adjustments to submit', 'error');
+    return;
+  }
+
+  const { submittedBy, userPin, pinId } = getSubmitIdentity('adjustments');
+  if (!submittedBy || !userPin) {
+    setStatus('Select employee and enter PIN', 'error');
+    return;
+  }
+
+  const payload = {
+    store: storeName(),
+    submittedBy,
+    userPin,
+    adjustments: adjustmentItems,
+    timestamp: new Date().toISOString()
+  };
+
+  const count = adjustmentItems.length;
+  adjustmentItems = [];
+  updateAdjustmentTable();
+  clearPin(pinId);
+
+  queueAndSync('adjustment', payload, `${count} adjustment(s) queued.`);
+  hideStockAdjustment();
+}
+
+function showExpenseModal() {
+  document.getElementById('expense-modal').style.display = 'flex';
+}
+
+function hideExpenseModal() {
+  document.getElementById('expense-modal').style.display = 'none';
+}
+
+function submitExpense() {
+  const category = document.getElementById('expense-category').value.trim();
+  const amount = parseMoney(document.getElementById('expense-amount').value);
+  const paymentMethod = document.getElementById('expense-payment').value;
+  const description = document.getElementById('expense-description').value.trim();
+
+  if (!category) {
+    setStatus('Please enter an expense category', 'error');
+    return;
+  }
+
+  if (!amount || amount <= 0) {
+    setStatus('Please enter a valid amount', 'error');
+    return;
+  }
+
+  const { submittedBy, userPin, pinId } = getSubmitIdentity('cashout');
+  if (!submittedBy || !userPin) {
+    setStatus('Select employee and enter PIN', 'error');
+    return;
+  }
+
+  const payload = {
+    store: storeName(),
+    submittedBy,
+    userPin,
+    category,
+    amount,
+    paymentMethod,
+    description,
+    timestamp: new Date().toISOString()
+  };
+
+  clearPin(pinId);
+  hideExpenseModal();
+  
+  // Reset expense form
+  document.getElementById('expense-category').value = '';
+  document.getElementById('expense-amount').value = '';
+  document.getElementById('expense-description').value = '';
+
+  queueAndSync('expense', payload, `Expense of ${formatMoney(amount)} queued.`);
+}
+
+// Add event listeners for item selection
 document.addEventListener('DOMContentLoaded', function() {
-  attachMoneyFormatting();
-  console.log('POS System initialized');
+  const itemInput = document.getElementById('item');
+  if (itemInput) {
+    itemInput.addEventListener('change', updatePrice);
+    itemInput.addEventListener('input', updateSelectedStockInfo);
+  }
+  
+  const unitSelect = document.getElementById('unit');
+  if (unitSelect) {
+    unitSelect.addEventListener('change', updatePrice);
+  }
+  
+  const quantityInput = document.getElementById('quantity');
+  if (quantityInput) {
+    quantityInput.addEventListener('input', calculateTotal);
+  }
+  
+  const adjustmentSearch = document.getElementById('adjustment-search');
+  if (adjustmentSearch) {
+    adjustmentSearch.addEventListener('input', updateAdjustmentStockInfo);
+  }
 });
