@@ -1,4 +1,4 @@
-const POS_API_URL = 'https://script.google.com/macros/s/AKfycbxo1aKnxNNqd23wgJ2Dr5OLo9UE237vPDMHJlQLWAknQ19yrh6q1C7gpHalSJhX2_UfiA/exec';
+const POS_API_URL = 'https://script.google.com/macros/s/AKfycbxsQR3z1P7ND5OOFf16PbfeYXpKNUadalDQ5EgnqVGFubbXDFsjXCfuCdPEEQkpQ9F-/exec';
 const LOCAL_QUEUE_KEY = 'stationery_pos_sync_queue_v4';
 const LAST_SELECTED_USER_KEY = 'stationery_pos_last_user_v1';
 
@@ -215,101 +215,51 @@ async function selectStore(storeId) {
   document.getElementById('store-name').textContent = stores[storeId].name + ' POS';
   setStatus(`Loading ${storeName()} data...`, 'warning');
 
-  const productsLoaded = await loadProducts();
-  const usersLoaded = await loadUsers();
-
-  console.log('productsLoaded:', productsLoaded);
-  console.log('usersLoaded:', usersLoaded);
-
+  await Promise.all([loadProducts(), loadUsers()]);
   processQueue();
 }
 
 async function loadProducts() {
   try {
-    setStatus('Loading products...', 'warning');
-
     const res = await apiRequest('products', { store: storeName() });
-    console.log('Products raw response:', res);
 
     if (!res || !res.ok) {
       throw new Error(res?.error || 'Failed to load products');
     }
 
     if (!Array.isArray(res.data)) {
-      throw new Error('Products response is not an array');
+      throw new Error('Invalid product feed');
     }
 
-    products = res.data.map((p, index) => {
-      const product = {
-        id: p.productId || `row_${index + 1}`,
-        name: String(p.productName || '').trim(),
-        prices: {
-          ct: Number(p.priceCt) || 0,
-          dz: Number(p.priceDz) || 0,
-          pc: Number(p.pricePc) || 0
-        },
-        stock: Number(p.stock) || 0,
-        stockStore1: Number(p.stockOneStop) || 0,
-        stockStore2: Number(p.stockGolden) || 0,
-        countingUnit: p.countingUnit || 'pc'
-      };
-      return product;
-    }).filter(p => p.name !== '');
+    // FIXED: Properly map the product data with correct field names
+    products = res.data.map(p => ({
+      id: p.productId || p.id,
+      name: p.productName || p.name,
+      prices: {
+        ct: Number(p.priceCt) || 0,
+        dz: Number(p.priceDz) || 0,
+        pc: Number(p.pricePc) || Number(p.price) || 0
+      },
+      stock: Number(p.stock) || 0,
+      stockStore1: Number(p.stockOneStop) || Number(p.stock_store1) || 0,
+      stockStore2: Number(p.stockGolden) || Number(p.stock_store2) || 0,
+      countingUnit: p.countingUnit || p.unit || 'pc'
+    }));
 
-    console.log('Mapped products:', products);
-
+    console.log('Loaded products:', products); // Debug log
+    
     populateSalesDatalist();
     populateAdjustmentDatalist();
-
     setStatus(`Loaded ${products.length} products`, 'success');
-    return true;
   } catch (error) {
     console.error('loadProducts error:', error);
     setStatus('Failed to load products: ' + error.message, 'error');
-    return false;
   }
-}
-
-function populateSalesDatalist() {
-  const dl = document.getElementById('item-list');
-  if (!dl) {
-    console.warn('item-list datalist not found');
-    return;
-  }
-
-  dl.innerHTML = '';
-
-  products.forEach(p => {
-    const opt = document.createElement('option');
-    opt.value = p.name;
-    dl.appendChild(opt);
-  });
-
-  console.log(`Sales datalist populated with ${products.length} items`);
-}
-
-function populateAdjustmentDatalist() {
-  const dl = document.getElementById('adjustment-item-list');
-  if (!dl) {
-    console.warn('adjustment-item-list datalist not found');
-    return;
-  }
-
-  dl.innerHTML = '';
-
-  products.forEach(p => {
-    const opt = document.createElement('option');
-    opt.value = p.name;
-    dl.appendChild(opt);
-  });
-
-  console.log(`Adjustment datalist populated with ${products.length} items`);
 }
 
 async function loadUsers() {
   try {
     const res = await apiRequest('users', { store: storeName() });
-    console.log('Users raw response:', res);
 
     if (!res || !res.ok) {
       throw new Error(res?.error || 'Failed to load users');
@@ -317,11 +267,9 @@ async function loadUsers() {
 
     users = Array.isArray(res.data) ? res.data : [];
     populateUserSelects();
-    return true;
   } catch (error) {
     console.error('loadUsers error:', error);
     setStatus('Failed to load users: ' + error.message, 'error');
-    return false;
   }
 }
 
@@ -451,7 +399,13 @@ function updatePrice() {
   const unit = document.getElementById('unit').value;
   const product = products.find(p => p.name.toLowerCase() === itemName);
 
-  document.getElementById('price').value = product ? formatMoney(product.prices[unit] || 0) : '';
+  if (product && product.prices) {
+    const priceValue = product.prices[unit] || 0;
+    document.getElementById('price').value = priceValue > 0 ? formatMoney(priceValue) : '';
+  } else {
+    document.getElementById('price').value = '';
+  }
+  
   updateSelectedStockInfo();
   calculateTotal();
 }
