@@ -145,23 +145,20 @@ function jsonpRequest(url, timeout = 10000) {
 }
 
 // Iframe for POST requests (bypasses CORS)
-function iframePostRequest(url, data) {
+function iframePostRequest(url, data, timeout = 15000) {
   return new Promise((resolve, reject) => {
-    const iframeId = `iframe_${Date.now()}`;
-    const formId = `form_${Date.now()}`;
-    
+    const iframeId = `iframe_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const iframe = document.createElement('iframe');
     iframe.name = iframeId;
     iframe.style.display = 'none';
     document.body.appendChild(iframe);
-    
+
     const form = document.createElement('form');
     form.method = 'POST';
     form.action = url;
     form.target = iframeId;
     form.style.display = 'none';
-    
-    // Add all data as hidden fields
+
     const addField = (name, value) => {
       const input = document.createElement('input');
       input.type = 'hidden';
@@ -169,34 +166,62 @@ function iframePostRequest(url, data) {
       input.value = typeof value === 'object' ? JSON.stringify(value) : String(value);
       form.appendChild(input);
     };
-    
-    Object.keys(data).forEach(key => {
-      addField(key, data[key]);
-    });
-    
+
+    Object.keys(data).forEach(key => addField(key, data[key]));
     document.body.appendChild(form);
-    
-    let responded = false;
-    iframe.onload = function() {
-      if (!responded) {
-        responded = true;
-        setTimeout(() => {
-          document.body.removeChild(iframe);
-          document.body.removeChild(form);
-          resolve({ ok: true, message: 'Data submitted successfully' });
-        }, 500);
+
+    const cleanup = () => {
+      if (form.parentNode) form.parentNode.removeChild(form);
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+    };
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Request timed out'));
+    }, timeout);
+
+    iframe.onload = () => {
+      try {
+        clearTimeout(timer);
+
+        let text = '';
+        try {
+          const doc = iframe.contentDocument || iframe.contentWindow.document;
+          text = (doc.body && doc.body.innerText ? doc.body.innerText : '').trim();
+        } catch (_) {
+          cleanup();
+          resolve({ ok: true, message: 'Submitted, but response could not be read' });
+          return;
+        }
+
+        cleanup();
+
+        if (!text) {
+          reject(new Error('Empty server response'));
+          return;
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch (err) {
+          reject(new Error('Invalid server response: ' + text));
+          return;
+        }
+
+        resolve(parsed);
+      } catch (err) {
+        cleanup();
+        reject(err);
       }
     };
-    
-    iframe.onerror = function() {
-      if (!responded) {
-        responded = true;
-        document.body.removeChild(iframe);
-        document.body.removeChild(form);
-        reject(new Error('Submission failed'));
-      }
+
+    iframe.onerror = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(new Error('Submission failed'));
     };
-    
+
     form.submit();
   });
 }
