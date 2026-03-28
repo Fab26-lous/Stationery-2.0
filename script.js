@@ -1,4 +1,4 @@
-const POS_API_URL = 'https://script.google.com/macros/s/AKfycbxCazntgLyxTwlB285oipfLNGAZ6oK0PnFaxCzLdYkVGA_07q3Wx8RCA5HmI9xJ-fR4uA/exec'; // Replace with your actual URL
+const POS_API_URL = 'https://script.google.com/macros/s/AKfycbyLmOguMkmKEvXvbCBR_7H5ztqkIs_jqafcCtjOB1aMKO7SLpVa4KDjbSAhNtVsf5Ej/exec'; // Replace with your URL
 const LOCAL_QUEUE_KEY = 'stationery_pos_sync_queue_v4';
 const LAST_SELECTED_USER_KEY = 'stationery_pos_last_user_v1';
 
@@ -15,6 +15,7 @@ let allStoreProducts = [];
 let adjustmentItems = [];
 let isSyncing = false;
 
+// Status display
 function setStatus(message, type = 'info') {
   const el = document.getElementById('sync-status');
   if (!el) return;
@@ -31,6 +32,7 @@ function generateId() {
   return 'q_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 }
 
+// Queue management
 function getQueue() {
   try {
     return JSON.parse(localStorage.getItem(LOCAL_QUEUE_KEY) || '[]');
@@ -67,6 +69,7 @@ function updatePendingBadge() {
   el.textContent = getQueue().length;
 }
 
+// Money formatting
 function parseMoney(value) {
   if (value == null) return 0;
   const cleaned = String(value).replace(/,/g, '').trim();
@@ -107,77 +110,120 @@ function handleMoneyBlur() {
   }
 }
 
-// JSONP function for GET requests
-function jsonpRequest(url, callbackName) {
+// JSONP for GET requests (no CORS)
+function jsonpRequest(url, timeout = 10000) {
   return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    const callbackFunction = `jsonp_callback_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const callbackName = `jsonp_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
+    const separator = url.includes('?') ? '&' : '?';
+    const fullUrl = `${url}${separator}callback=${callbackName}`;
     
-    window[callbackFunction] = function(data) {
-      delete window[callbackFunction];
-      document.body.removeChild(script);
+    const script = document.createElement('script');
+    const timeoutId = setTimeout(() => {
+      cleanup();
+      reject(new Error('JSONP request timeout'));
+    }, timeout);
+    
+    window[callbackName] = function(data) {
+      cleanup();
       resolve(data);
     };
     
-    const separator = url.includes('?') ? '&' : '?';
-    script.src = `${url}${separator}callback=${callbackFunction}`;
+    function cleanup() {
+      clearTimeout(timeoutId);
+      delete window[callbackName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+    
+    script.src = fullUrl;
     script.onerror = () => {
-      delete window[callbackFunction];
-      document.body.removeChild(script);
+      cleanup();
       reject(new Error('JSONP request failed'));
     };
     
-    document.body.appendChild(script);
+    document.head.appendChild(script);
   });
 }
 
-// API Request function that uses JSONP for GET and fetch for POST
+// Iframe for POST requests (bypasses CORS)
+function iframePostRequest(url, data) {
+  return new Promise((resolve, reject) => {
+    const iframeId = `iframe_${Date.now()}`;
+    const formId = `form_${Date.now()}`;
+    
+    const iframe = document.createElement('iframe');
+    iframe.name = iframeId;
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+    
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = url;
+    form.target = iframeId;
+    form.style.display = 'none';
+    
+    // Add all data as hidden fields
+    const addField = (name, value) => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      form.appendChild(input);
+    };
+    
+    Object.keys(data).forEach(key => {
+      addField(key, data[key]);
+    });
+    
+    document.body.appendChild(form);
+    
+    let responded = false;
+    iframe.onload = function() {
+      if (!responded) {
+        responded = true;
+        setTimeout(() => {
+          document.body.removeChild(iframe);
+          document.body.removeChild(form);
+          resolve({ ok: true, message: 'Data submitted successfully' });
+        }, 500);
+      }
+    };
+    
+    iframe.onerror = function() {
+      if (!responded) {
+        responded = true;
+        document.body.removeChild(iframe);
+        document.body.removeChild(form);
+        reject(new Error('Submission failed'));
+      }
+    };
+    
+    form.submit();
+  });
+}
+
+// Main API request function
 async function apiRequest(action, data = {}) {
   console.log(`API Request: ${action}`, data);
   
   try {
-    // For GET requests, use JSONP (bypasses CORS)
-    const getActions = ['products', 'stock', 'users', 'health'];
-    
-    if (getActions.includes(action)) {
+    // GET actions - use JSONP
+    if (['products', 'stock', 'users', 'health'].includes(action)) {
       let url = `${POS_API_URL}?action=${action}`;
       if (data.store) {
         url += `&store=${data.store}`;
       }
-      url += `&_=${Date.now()}`; // Cache busting
+      url += `&_=${Date.now()}`;
       
-      console.log('JSONP Request URL:', url);
       const result = await jsonpRequest(url);
       console.log(`JSONP Response (${action}):`, result);
       return result;
     }
     
-    // For POST requests, use fetch with CORS
-    const postActions = ['sales', 'adjustments', 'cashout'];
-    
-    if (postActions.includes(action)) {
+    // POST actions - use iframe
+    if (['sales', 'adjustments', 'cashout'].includes(action)) {
       const payload = { action, ...data };
-      
-      console.log('POST Request payload:', payload);
-      
-      const response = await fetch(POS_API_URL, {
-        method: 'POST',
-        mode: 'cors',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
-      
-      const text = await response.text();
-      console.log(`POST Response (${action}):`, text);
-      
-      try {
-        return JSON.parse(text);
-      } catch (e) {
-        return { ok: false, error: 'Invalid response' };
-      }
+      const result = await iframePostRequest(POS_API_URL, payload);
+      return result;
     }
     
     return { ok: false, error: 'Unknown action' };
@@ -189,6 +235,7 @@ async function apiRequest(action, data = {}) {
   }
 }
 
+// Queue processing
 async function processQueue() {
   if (isSyncing) return;
   
@@ -204,7 +251,7 @@ async function processQueue() {
     setStatus(`Syncing ${queue.length} pending item(s)...`, 'warning');
     
     for (const job of queue) {
-      console.log(`Processing queue item: ${job.action}`, job.payload);
+      console.log(`Processing queue item: ${job.action}`);
       const result = await apiRequest(job.action, job.payload);
       
       if (result && result.ok) {
@@ -212,7 +259,7 @@ async function processQueue() {
         console.log(`Successfully synced: ${job.action}`);
       } else {
         console.error('Queue sync failed:', job, result);
-        setStatus(`${getQueue().length} pending. Sync will retry automatically.`, 'error');
+        setStatus(`${getQueue().length} pending. Sync will retry.`, 'error');
         return;
       }
     }
@@ -235,16 +282,14 @@ async function processQueue() {
 function queueAndSync(action, payload, successMessage) {
   addToQueue(action, payload);
   setStatus(successMessage + ' Saved locally. Will sync when online.', 'success');
-  setTimeout(processQueue, 5000);
+  setTimeout(processQueue, 3000);
 }
 
 function showSection(id) {
   const sections = ['store-selection', 'pos-container'];
   sections.forEach(sectionId => {
     const el = document.getElementById(sectionId);
-    if (!el) return;
-    if (sectionId === id) el.classList.remove('hidden');
-    else el.classList.add('hidden');
+    if (el) el.classList.toggle('hidden', sectionId !== id);
   });
 }
 
@@ -265,23 +310,17 @@ async function loadUsers() {
     
     const res = await apiRequest('users', { store: currentStore });
     
-    console.log('Users API response:', res);
-    
     if (res && res.ok && Array.isArray(res.data)) {
       users = res.data;
-      console.log(`Loaded ${users.length} users from API`);
+      console.log(`Loaded ${users.length} users`);
     } else {
       users = [];
-      console.warn('No users data in response:', res);
+      console.warn('No users data');
     }
     
     populateUserSelects();
-    
-    if (users.length === 0) {
-      setStatus(`No active users found for ${storeName()}`, 'warning');
-    } else {
-      setStatus(`Loaded ${users.length} user(s)`, 'success');
-    }
+    setStatus(users.length ? `Loaded ${users.length} user(s)` : 'No users found', 
+              users.length ? 'success' : 'warning');
     
   } catch (error) {
     console.error('loadUsers error:', error);
@@ -298,15 +337,11 @@ async function loadProducts() {
     
     const res = await apiRequest('products', { store: currentStore });
     
-    console.log('Products API response:', res);
-    
     if (!res || !res.ok || !Array.isArray(res.data) || res.data.length === 0) {
-      console.log('No products from API');
+      console.log('No products from API, using demo');
       loadDemoProducts();
       return;
     }
-    
-    console.log(`Received ${res.data.length} products from API`);
     
     products = res.data.map((p, index) => ({
       id: p.productId || index,
@@ -316,14 +351,12 @@ async function loadProducts() {
         dz: Number(p.priceDz) || 0,
         pc: Number(p.pricePc) || 0
       },
-      stock: 0,
       stockStore1: Number(p.stockOneStop) || 0,
       stockStore2: Number(p.stockGolden) || 0,
       countingUnit: p.countingUnit || 'pc'
     }));
     
-    console.log(`Mapped ${products.length} products`);
-    
+    console.log(`Loaded ${products.length} products`);
     populateSalesDatalist();
     populateAdjustmentDatalist();
     setStatus(`Loaded ${products.length} products`, 'success');
@@ -335,48 +368,18 @@ async function loadProducts() {
 }
 
 function loadDemoProducts() {
-  console.log('Loading DEMO products');
   products = [
-    {
-      id: '1',
-      name: 'Notebook A4',
-      prices: { ct: 5000, dz: 48000, pc: 550 },
-      stockStore1: 45,
-      stockStore2: 55,
-      countingUnit: 'pc'
-    },
-    {
-      id: '2',
-      name: 'Pen Blue',
-      prices: { ct: 2500, dz: 24000, pc: 250 },
-      stockStore1: 120,
-      stockStore2: 80,
-      countingUnit: 'pc'
-    },
-    {
-      id: '3',
-      name: 'Eraser',
-      prices: { ct: 1000, dz: 9000, pc: 100 },
-      stockStore1: 90,
-      stockStore2: 60,
-      countingUnit: 'pc'
-    }
+    { id: '1', name: 'Notebook A4', prices: { ct: 5000, dz: 48000, pc: 550 }, stockStore1: 45, stockStore2: 55, countingUnit: 'pc' },
+    { id: '2', name: 'Pen Blue', prices: { ct: 2500, dz: 24000, pc: 250 }, stockStore1: 120, stockStore2: 80, countingUnit: 'pc' },
+    { id: '3', name: 'Eraser', prices: { ct: 1000, dz: 9000, pc: 100 }, stockStore1: 90, stockStore2: 60, countingUnit: 'pc' }
   ];
-  
-  console.log(`Loaded ${products.length} DEMO products`);
   setStatus('Using DEMO products (API unavailable)', 'warning');
-  
   populateSalesDatalist();
   populateAdjustmentDatalist();
 }
 
 function populateUserSelects() {
-  const selectIds = [
-    'sales-submitted-by',
-    'adjustment-submitted-by',
-    'expense-submitted-by'
-  ];
-  
+  const selectIds = ['sales-submitted-by', 'adjustment-submitted-by', 'expense-submitted-by'];
   const remembered = localStorage.getItem(LAST_SELECTED_USER_KEY + '_' + storeName()) || '';
   
   selectIds.forEach(id => {
@@ -384,7 +387,6 @@ function populateUserSelects() {
     if (!select) return;
     
     select.innerHTML = '<option value="">Select employee</option>';
-    
     users.forEach(user => {
       const option = document.createElement('option');
       option.value = user.username;
@@ -396,7 +398,7 @@ function populateUserSelects() {
       select.value = remembered;
     }
     
-    select.onchange = function () {
+    select.onchange = function() {
       const selectedUser = this.value || '';
       if (selectedUser) {
         localStorage.setItem(LAST_SELECTED_USER_KEY + '_' + storeName(), selectedUser);
@@ -413,10 +415,7 @@ function populateUserSelects() {
 function mirrorSelectedUser(username) {
   ['sales-submitted-by', 'adjustment-submitted-by', 'expense-submitted-by'].forEach(id => {
     const select = document.getElementById(id);
-    if (!select) return;
-    
-    const exists = Array.from(select.options).some(o => o.value === username);
-    if (exists && select.value !== username) {
+    if (select && Array.from(select.options).some(o => o.value === username)) {
       select.value = username;
     }
   });
@@ -424,13 +423,8 @@ function mirrorSelectedUser(username) {
 
 function populateSalesDatalist() {
   const dl = document.getElementById('item-list');
-  if (!dl) {
-    console.error('item-list datalist not found');
-    return;
-  }
+  if (!dl) return;
   dl.innerHTML = '';
-  console.log(`Populating sales datalist with ${products.length} products`);
-  
   products.forEach(p => {
     const opt = document.createElement('option');
     opt.value = p.name;
@@ -442,7 +436,6 @@ function populateAdjustmentDatalist() {
   const dl = document.getElementById('adjustment-item-list');
   if (!dl) return;
   dl.innerHTML = '';
-  
   products.forEach(p => {
     const opt = document.createElement('option');
     opt.value = p.name;
@@ -466,11 +459,11 @@ function updateSelectedStockInfo() {
     return;
   }
   
-  const currentStoreStock = currentStore === 'store1' ? product.stockStore1 : product.stockStore2;
-  const otherStoreStock = currentStore === 'store1' ? product.stockStore2 : product.stockStore1;
-  const otherStoreName = currentStore === 'store1' ? 'Golden' : 'One Stop';
+  const currentStock = currentStore === 'store1' ? product.stockStore1 : product.stockStore2;
+  const otherStock = currentStore === 'store1' ? product.stockStore2 : product.stockStore1;
+  const otherName = currentStore === 'store1' ? 'Golden' : 'One Stop';
   
-  box.textContent = `Current stock here: ${formatMoney(currentStoreStock)} | ${otherStoreName}: ${formatMoney(otherStoreStock)}`;
+  box.textContent = `Current stock: ${formatMoney(currentStock)} | ${otherName}: ${formatMoney(otherStock)}`;
 }
 
 function updateAdjustmentStockInfo() {
@@ -489,11 +482,11 @@ function updateAdjustmentStockInfo() {
     return;
   }
   
-  const currentStoreStock = currentStore === 'store1' ? product.stockStore1 : product.stockStore2;
-  const otherStoreStock = currentStore === 'store1' ? product.stockStore2 : product.stockStore1;
-  const otherStoreName = currentStore === 'store1' ? 'Golden' : 'One Stop';
+  const currentStock = currentStore === 'store1' ? product.stockStore1 : product.stockStore2;
+  const otherStock = currentStore === 'store1' ? product.stockStore2 : product.stockStore1;
+  const otherName = currentStore === 'store1' ? 'Golden' : 'One Stop';
   
-  box.textContent = `Current stock here: ${formatMoney(currentStoreStock)} | ${otherStoreName}: ${formatMoney(otherStoreStock)}`;
+  box.textContent = `Current stock: ${formatMoney(currentStock)} | ${otherName}: ${formatMoney(otherStock)}`;
 }
 
 function updatePrice() {
@@ -531,7 +524,6 @@ function resetForm() {
   document.getElementById('extra').value = '0';
   document.getElementById('total').value = '';
   document.getElementById('quantity').value = '';
-  
   const box = document.getElementById('selected-stock-info');
   if (box) box.textContent = 'Select an item to view stock';
 }
@@ -546,48 +538,25 @@ function addToSale() {
   const paymentMethod = document.getElementById('payment-method').value;
   const total = (quantity * price) - discount + extra;
   
-  if (!item) {
-    setStatus('Please select an item', 'error');
-    return;
-  }
+  if (!item) { setStatus('Please select an item', 'error'); return; }
+  if (!quantity || quantity <= 0) { setStatus('Please enter a valid quantity', 'error'); return; }
+  if (!price || price <= 0) { setStatus('Please enter a valid price', 'error'); return; }
   
-  if (!quantity || quantity <= 0) {
-    setStatus('Please enter a valid quantity', 'error');
-    return;
-  }
-  
-  if (!price || price <= 0) {
-    setStatus('Please enter a valid price', 'error');
-    return;
-  }
-  
-  currentSales.push({
-    item,
-    unit,
-    quantity,
-    price,
-    discount,
-    extra,
-    total,
-    paymentMethod
-  });
-  
+  currentSales.push({ item, unit, quantity, price, discount, extra, total, paymentMethod });
   updateSalesTable();
   resetForm();
-  setStatus(`Added ${quantity} ${unit} of ${item} to sale`, 'success');
+  setStatus(`Added ${quantity} ${unit} of ${item}`, 'success');
 }
 
 function updateSalesTable() {
   const tbody = document.querySelector('#sales-table tbody');
   if (!tbody) return;
-  
   tbody.innerHTML = '';
   
   if (!currentSales.length) {
     tbody.innerHTML = '<tr><td colspan="10" class="muted">No items added yet</td></tr>';
   } else {
     let grandTotal = 0;
-    
     currentSales.forEach((sale, index) => {
       grandTotal += sale.total;
       const tr = document.createElement('tr');
@@ -605,19 +574,13 @@ function updateSalesTable() {
       `;
       tbody.appendChild(tr);
     });
-    
     const totalRow = document.createElement('tr');
-    totalRow.innerHTML = `
-      <td colspan="7" style="text-align:right;"><strong>Grand Total</strong></td>
-      <td><strong>${formatMoney(grandTotal)}</strong></td>
-      <td colspan="2"></td>
-    `;
+    totalRow.innerHTML = `<td colspan="7" style="text-align:right;"><strong>Grand Total</strong></td><td><strong>${formatMoney(grandTotal)}</strong></td><td colspan="2"></td>`;
     tbody.appendChild(totalRow);
   }
   
   const submitBtn = document.getElementById('submit-all-btn');
   const clearBtn = document.getElementById('clear-all-btn');
-  
   if (submitBtn) submitBtn.classList.toggle('hidden', !currentSales.length);
   if (clearBtn) clearBtn.classList.toggle('hidden', !currentSales.length);
 }
@@ -625,7 +588,7 @@ function updateSalesTable() {
 function removeSale(index) {
   currentSales.splice(index, 1);
   updateSalesTable();
-  setStatus('Item removed from current sale', 'warning');
+  setStatus('Item removed', 'warning');
 }
 
 function clearAllSales() {
@@ -635,22 +598,13 @@ function clearAllSales() {
 }
 
 function getSubmitIdentity(type) {
-  const selectId = {
-    sales: 'sales-submitted-by',
-    adjustments: 'adjustment-submitted-by',
-    cashout: 'expense-submitted-by'
-  }[type];
-  
-  const pinId = {
-    sales: 'sales-pin',
-    adjustments: 'adjustment-pin',
-    cashout: 'expense-pin'
-  }[type];
-  
-  const submittedBy = document.getElementById(selectId)?.value || '';
-  const userPin = document.getElementById(pinId)?.value || '';
-  
-  return { submittedBy, userPin, pinId };
+  const selectId = { sales: 'sales-submitted-by', adjustments: 'adjustment-submitted-by', cashout: 'expense-submitted-by' }[type];
+  const pinId = { sales: 'sales-pin', adjustments: 'adjustment-pin', cashout: 'expense-pin' }[type];
+  return {
+    submittedBy: document.getElementById(selectId)?.value || '',
+    userPin: document.getElementById(pinId)?.value || '',
+    pinId
+  };
 }
 
 function clearPin(pinId) {
@@ -666,7 +620,7 @@ function submitAllSales() {
   
   const { submittedBy, userPin, pinId } = getSubmitIdentity('sales');
   if (!submittedBy || !userPin) {
-    setStatus('Select employee and enter PIN before submitting sales', 'error');
+    setStatus('Select employee and enter PIN', 'error');
     return;
   }
   
@@ -690,11 +644,7 @@ async function showStockLevels() {
   try {
     setStatus('Loading stock levels...', 'warning');
     const res = await apiRequest('stock', {});
-    
-    if (!res.ok) {
-      setStatus('Could not load stock', 'error');
-      return;
-    }
+    if (!res.ok) throw new Error('Failed to load stock');
     
     allStoreProducts = res.data || [];
     populateStockTable(allStoreProducts);
@@ -703,17 +653,14 @@ async function showStockLevels() {
     const searchInput = document.getElementById('stock-search');
     if (searchInput) {
       searchInput.value = '';
-      searchInput.oninput = function () {
-        const term = this.value.toLowerCase().trim();
-        const filtered = allStoreProducts.filter(p =>
-          !term || String(p.productName).toLowerCase().includes(term)
-        );
+      searchInput.oninput = () => {
+        const term = searchInput.value.toLowerCase().trim();
+        const filtered = allStoreProducts.filter(p => !term || String(p.productName).toLowerCase().includes(term));
         populateStockTable(filtered);
       };
     }
     setStatus('Stock levels loaded', 'success');
   } catch (error) {
-    console.error(error);
     setStatus('Failed to load stock levels', 'error');
   }
 }
@@ -725,42 +672,23 @@ function hideStockLevels() {
 function populateStockTable(list) {
   const tbody = document.getElementById('stock-table-body');
   if (!tbody) return;
-  
   tbody.innerHTML = '';
   
-  let outCount = 0;
-  let lowCount = 0;
-  
+  let outCount = 0, lowCount = 0;
   list.forEach(p => {
     const one = Number(p.stockOneStop) || 0;
     const two = Number(p.stockGolden) || 0;
-    let label = 'OK';
-    let cls = 'status-ok';
-    
-    if (one <= 0 && two <= 0) {
-      label = 'OUT';
-      cls = 'status-out';
-      outCount++;
-    } else if (one <= 5 || two <= 5) {
-      label = 'LOW';
-      cls = 'status-low';
-      lowCount++;
-    }
+    let label = 'OK', cls = 'status-ok';
+    if (one <= 0 && two <= 0) { label = 'OUT'; cls = 'status-out'; outCount++; }
+    else if (one <= 5 || two <= 5) { label = 'LOW'; cls = 'status-low'; lowCount++; }
     
     const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${p.productName}</td>
-      <td>${formatMoney(one)}</td>
-      <td>${formatMoney(two)}</td>
-      <td class="${cls}">${label}</td>
-    `;
+    tr.innerHTML = ` <td>${p.productName}</td><td>${formatMoney(one)}</td><td>${formatMoney(two)}</td><td class="${cls}">${label}</td> `;
     tbody.appendChild(tr);
   });
   
   const summary = document.getElementById('stock-summary');
-  if (summary) {
-    summary.textContent = `Products: ${list.length} | Out: ${outCount} | Low: ${lowCount}`;
-  }
+  if (summary) summary.textContent = `Products: ${list.length} | Out: ${outCount} | Low: ${lowCount}`;
 }
 
 function showStockAdjustment() {
@@ -768,18 +696,10 @@ function showStockAdjustment() {
   document.getElementById('adjustment-store-name').textContent = storeName();
   updateAdjustmentTable();
   document.getElementById('stock-adjustment-modal').style.display = 'flex';
-  
   const input = document.getElementById('adjustment-search');
+  if (input) { input.value = ''; input.focus(); }
   const info = document.getElementById('adjustment-stock-info');
-  
-  if (input) {
-    input.value = '';
-    input.focus();
-  }
-  
-  if (info) {
-    info.textContent = 'Search an item to view stock';
-  }
+  if (info) info.textContent = 'Search an item to view stock';
 }
 
 function hideStockAdjustment() {
@@ -789,58 +709,37 @@ function hideStockAdjustment() {
 function addItemToAdjustment() {
   const name = document.getElementById('adjustment-search').value.trim();
   const p = products.find(x => x.name.toLowerCase() === name.toLowerCase());
+  if (!p) { setStatus('Product not found', 'error'); return; }
+  if (adjustmentItems.some(x => x.name === p.name)) { setStatus('Item already added', 'warning'); return; }
   
-  if (!p) {
-    setStatus('Product not found', 'error');
-    return;
-  }
-  
-  if (adjustmentItems.some(x => x.name === p.name)) {
-    setStatus('Item already added', 'warning');
-    return;
-  }
-  
-  adjustmentItems.push({
-    name: p.name,
-    unit: 'pc',
-    adjustmentType: 'add',
-    quantity: 0
-  });
-  
+  adjustmentItems.push({ name: p.name, unit: 'pc', adjustmentType: 'add', quantity: 0 });
   document.getElementById('adjustment-search').value = '';
   updateAdjustmentTable();
-  setStatus('Item added to stock adjustment', 'success');
+  setStatus('Item added to adjustment', 'success');
 }
 
 function updateAdjustmentTable() {
   const tbody = document.getElementById('adjustment-table-body');
   if (!tbody) return;
-  
   tbody.innerHTML = '';
   
   if (!adjustmentItems.length) {
-    tbody.innerHTML = 'tr<td colspan="5" class="muted">No items added yet</td></tr>';
+    tbody.innerHTML = ' <tr><td colspan="5" class="muted">No items added yet</td></tr> ';
   } else {
     adjustmentItems.forEach((item, index) => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${item.name}</td>
-        <td>
-          <select onchange="updateAdjustmentUnit(${index}, this.value)">
-            <option value="pc" ${item.unit === 'pc' ? 'selected' : ''}>pc</option>
-            <option value="dz" ${item.unit === 'dz' ? 'selected' : ''}>dz</option>
-            <option value="ct" ${item.unit === 'ct' ? 'selected' : ''}>ct</option>
-          </select>
-        </td>
-        <td>
-          <select onchange="updateAdjustmentType(${index}, this.value)">
-            <option value="add" ${item.adjustmentType === 'add' ? 'selected' : ''}>Add Stock</option>
-            <option value="remove" ${item.adjustmentType === 'remove' ? 'selected' : ''}>Remove Stock</option>
-          </select>
-        </td>
-        <td>
-          <input type="number" value="${item.quantity}" onchange="updateAdjustmentQuantity(${index}, this.value)" placeholder="Quantity">
-        </td>
+        <td><select onchange="updateAdjustmentUnit(${index}, this.value)">
+          <option value="pc" ${item.unit === 'pc' ? 'selected' : ''}>pc</option>
+          <option value="dz" ${item.unit === 'dz' ? 'selected' : ''}>dz</option>
+          <option value="ct" ${item.unit === 'ct' ? 'selected' : ''}>ct</option>
+        </select></td>
+        <td><select onchange="updateAdjustmentType(${index}, this.value)">
+          <option value="add" ${item.adjustmentType === 'add' ? 'selected' : ''}>Add Stock</option>
+          <option value="remove" ${item.adjustmentType === 'remove' ? 'selected' : ''}>Remove Stock</option>
+        </select></td>
+        <td><input type="number" value="${item.quantity}" onchange="updateAdjustmentQuantity(${index}, this.value)" placeholder="Quantity"></td>
         <td><button class="btn-mini" onclick="removeAdjustmentItem(${index})">×</button></td>
       `;
       tbody.appendChild(tr);
@@ -848,76 +747,31 @@ function updateAdjustmentTable() {
   }
   
   const summary = document.getElementById('adjustment-summary');
-  if (summary) {
-    summary.textContent = `Items to adjust: ${adjustmentItems.length}`;
-  }
+  if (summary) summary.textContent = `Items to adjust: ${adjustmentItems.length}`;
 }
 
-function updateAdjustmentUnit(index, unit) {
-  if (adjustmentItems[index]) {
-    adjustmentItems[index].unit = unit;
-  }
-}
-
-function updateAdjustmentType(index, type) {
-  if (adjustmentItems[index]) {
-    adjustmentItems[index].adjustmentType = type;
-  }
-}
-
-function updateAdjustmentQuantity(index, quantity) {
-  if (adjustmentItems[index]) {
-    adjustmentItems[index].quantity = parseFloat(quantity) || 0;
-  }
-}
-
-function removeAdjustmentItem(index) {
-  adjustmentItems.splice(index, 1);
-  updateAdjustmentTable();
-}
-
-function clearAdjustments() {
-  adjustmentItems = [];
-  updateAdjustmentTable();
-  setStatus('Adjustment cleared', 'info');
-}
+function updateAdjustmentUnit(index, unit) { if (adjustmentItems[index]) adjustmentItems[index].unit = unit; }
+function updateAdjustmentType(index, type) { if (adjustmentItems[index]) adjustmentItems[index].adjustmentType = type; }
+function updateAdjustmentQuantity(index, quantity) { if (adjustmentItems[index]) adjustmentItems[index].quantity = parseFloat(quantity) || 0; }
+function removeAdjustmentItem(index) { adjustmentItems.splice(index, 1); updateAdjustmentTable(); }
+function clearAdjustments() { adjustmentItems = []; updateAdjustmentTable(); setStatus('Adjustment cleared', 'info'); }
 
 function submitStockAdjustment() {
-  if (!adjustmentItems.length) {
-    setStatus('No adjustments to submit', 'error');
-    return;
-  }
-  
+  if (!adjustmentItems.length) { setStatus('No adjustments to submit', 'error'); return; }
   const { submittedBy, userPin, pinId } = getSubmitIdentity('adjustments');
-  if (!submittedBy || !userPin) {
-    setStatus('Select employee and enter PIN', 'error');
-    return;
-  }
+  if (!submittedBy || !userPin) { setStatus('Select employee and enter PIN', 'error'); return; }
   
-  const payload = {
-    store: storeName(),
-    submittedBy,
-    userPin,
-    items: adjustmentItems,
-    timestamp: new Date().toISOString()
-  };
-  
+  const payload = { store: storeName(), submittedBy, userPin, items: adjustmentItems, timestamp: new Date().toISOString() };
   const count = adjustmentItems.length;
   adjustmentItems = [];
   updateAdjustmentTable();
   clearPin(pinId);
-  
   queueAndSync('adjustments', payload, `${count} adjustment(s) queued.`);
   hideStockAdjustment();
 }
 
-function showExpenseModal() {
-  document.getElementById('expense-modal').style.display = 'flex';
-}
-
-function hideExpenseModal() {
-  document.getElementById('expense-modal').style.display = 'none';
-}
+function showExpenseModal() { document.getElementById('expense-modal').style.display = 'flex'; }
+function hideExpenseModal() { document.getElementById('expense-modal').style.display = 'none'; }
 
 function submitExpense() {
   const category = document.getElementById('expense-category').value.trim();
@@ -925,81 +779,40 @@ function submitExpense() {
   const paymentMethod = document.getElementById('expense-payment').value;
   const description = document.getElementById('expense-description').value.trim();
   
-  if (!category) {
-    setStatus('Please enter an expense category', 'error');
-    return;
-  }
-  
-  if (!amount || amount <= 0) {
-    setStatus('Please enter a valid amount', 'error');
-    return;
-  }
+  if (!category) { setStatus('Please enter a category', 'error'); return; }
+  if (!amount || amount <= 0) { setStatus('Please enter a valid amount', 'error'); return; }
   
   const { submittedBy, userPin, pinId } = getSubmitIdentity('cashout');
-  if (!submittedBy || !userPin) {
-    setStatus('Select employee and enter PIN', 'error');
-    return;
-  }
+  if (!submittedBy || !userPin) { setStatus('Select employee and enter PIN', 'error'); return; }
   
-  const payload = {
-    store: storeName(),
-    submittedBy,
-    userPin,
-    category,
-    amount,
-    paymentMethod,
-    description,
-    timestamp: new Date().toISOString(),
-    cashoutType: 'Operating_Expense'
-  };
-  
+  const payload = { store: storeName(), submittedBy, userPin, category, amount, paymentMethod, description, timestamp: new Date().toISOString() };
   clearPin(pinId);
   hideExpenseModal();
-  
   document.getElementById('expense-category').value = '';
   document.getElementById('expense-amount').value = '';
   document.getElementById('expense-description').value = '';
-  
   queueAndSync('cashout', payload, `Expense of ${formatMoney(amount)} queued.`);
 }
 
 // DOM Event Listeners
 document.addEventListener('DOMContentLoaded', function() {
   const saleForm = document.getElementById('sale-form');
-  if (saleForm) {
-    saleForm.addEventListener('submit', function(e) {
-      e.preventDefault();
-      addToSale();
-    });
-  }
-  
+  if (saleForm) saleForm.addEventListener('submit', e => { e.preventDefault(); addToSale(); });
   attachMoneyFormatting();
   
   const itemInput = document.getElementById('item');
-  if (itemInput) {
-    itemInput.addEventListener('change', updatePrice);
-    itemInput.addEventListener('input', updateSelectedStockInfo);
-  }
-  
+  if (itemInput) { itemInput.addEventListener('change', updatePrice); itemInput.addEventListener('input', updateSelectedStockInfo); }
   const unitSelect = document.getElementById('unit');
-  if (unitSelect) {
-    unitSelect.addEventListener('change', updatePrice);
-  }
-  
+  if (unitSelect) unitSelect.addEventListener('change', updatePrice);
   const quantityInput = document.getElementById('quantity');
-  if (quantityInput) {
-    quantityInput.addEventListener('input', calculateTotal);
-  }
-  
+  if (quantityInput) quantityInput.addEventListener('input', calculateTotal);
   const adjustmentSearch = document.getElementById('adjustment-search');
-  if (adjustmentSearch) {
-    adjustmentSearch.addEventListener('input', updateAdjustmentStockInfo);
-  }
+  if (adjustmentSearch) adjustmentSearch.addEventListener('input', updateAdjustmentStockInfo);
   
-  console.log('POS System initialized');
+  console.log('POS System Initialized');
 });
 
-// Expose functions to global scope
+// Expose functions globally
 window.selectStore = selectStore;
 window.removeSale = removeSale;
 window.clearAllSales = clearAllSales;
