@@ -1,4 +1,4 @@
-const POS_API_URL = 'YOUR_DEPLOYED_URL_HERE'; // Replace with your actual URL
+const POS_API_URL = 'https://script.google.com/macros/s/AKfycbxCazntgLyxTwlB285oipfLNGAZ6oK0PnFaxCzLdYkVGA_07q3Wx8RCA5HmI9xJ-fR4uA/exec'; // Replace with your actual URL
 const LOCAL_QUEUE_KEY = 'stationery_pos_sync_queue_v4';
 const LAST_SELECTED_USER_KEY = 'stationery_pos_last_user_v1';
 
