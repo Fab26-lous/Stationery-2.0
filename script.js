@@ -1,4 +1,4 @@
-const POS_API_URL = 'https://script.google.com/macros/s/AKfycbwEDoOhoemAsGm2xKaXvJnqwsDKRz_ABarov7_qeoP9w2nB8OTtJE3bBGOddMX3FqsPAw/exec';
+const POS_API_URL = 'https://script.google.com/macros/s/AKfycbxCazntgLyxTwlB285oipfLNGAZ6oK0PnFaxCzLdYkVGA_07q3Wx8RCA5HmI9xJ-fR4uA/exec'; // Replace with your actual URL
 const LOCAL_QUEUE_KEY = 'stationery_pos_sync_queue_v4';
 const LAST_SELECTED_USER_KEY = 'stationery_pos_last_user_v1';
 
@@ -101,9 +101,7 @@ function handleMoneyBlur() {
   const n = parseMoney(this.value);
   this.value = this.value.trim() === '' ? '' : formatMoney(n);
   if (['price', 'discount', 'extra', 'expense-amount'].includes(this.id)) {
-    if (this.id === 'expense-amount') {
-      // Handle expense calculation if needed
-    } else {
+    if (this.id !== 'expense-amount') {
       calculateTotal();
     }
   }
@@ -113,59 +111,52 @@ async function apiRequest(action, data = {}) {
   console.log(`API Request: ${action}`, data);
 
   try {
-    let response;
-    const url = new URL(POS_API_URL);
-
-    // Define which actions are GET vs POST
-    const getActions = ['health', 'products', 'stock'];
-    const postActions = ['sales', 'adjustments', 'cashout', 'users'];
-
-    if (getActions.includes(action)) {
-      url.searchParams.set('action', action);
-      
-      if (data.store) {
-        url.searchParams.set('store', data.store);
+    let url = `${POS_API_URL}?action=${action}`;
+    let options = {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
       }
-      
-      response = await fetch(url.toString(), {
-        method: 'GET',
-        headers: { Accept: 'application/json' }
-      });
-    } else {
-      // Use POST for all other actions including 'users'
-      const payload = { action, ...data };
-      
-      console.log(`Sending POST request with payload:`, payload);
-      
-      response = await fetch(POS_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
+    };
+    
+    // For POST actions, use POST method
+    const postActions = ['sales', 'adjustments', 'cashout'];
+    
+    if (postActions.includes(action)) {
+      options.method = 'POST';
+      options.body = JSON.stringify({ action, ...data });
+    } else if (data.store) {
+      url += `&store=${data.store}`;
     }
-
+    
+    // Add cache-busting
+    url += `&_=${Date.now()}`;
+    
+    console.log('Fetching:', url);
+    const response = await fetch(url, options);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
     const text = await response.text();
     console.log(`API Response (${action}):`, text);
-
+    
     let result;
     try {
       result = JSON.parse(text);
     } catch (parseErr) {
       console.error('JSON Parse Error:', parseErr);
-      throw new Error(`Server did not return valid JSON: ${text.substring(0, 200)}`);
+      throw new Error(`Invalid JSON response: ${text.substring(0, 200)}`);
     }
-
-    if (!response.ok) {
-      throw new Error(result.error || `HTTP ${response.status}`);
-    }
-
+    
     return result;
-
+    
   } catch (error) {
     console.error('API Request Error:', error);
-    return { ok: false, error: error.message || String(error) };
+    setStatus(`API Error: ${error.message}`, 'error');
+    return { ok: false, error: error.message };
   }
 }
 
@@ -202,6 +193,7 @@ async function processQueue() {
 
     if (currentStore) {
       loadProducts();
+      loadUsers();
     }
   } catch (error) {
     console.error('Queue processing error:', error);
@@ -213,8 +205,8 @@ async function processQueue() {
 
 function queueAndSync(action, payload, successMessage) {
   addToQueue(action, payload);
-  setStatus(successMessage + ' Saved locally.', 'success');
-  setTimeout(processQueue, 120);
+  setStatus(successMessage + ' Saved locally. Will sync when online.', 'success');
+  setTimeout(processQueue, 5000); // Retry after 5 seconds
 }
 
 function showSection(id) {
@@ -233,38 +225,27 @@ async function selectStore(storeId) {
   document.getElementById('store-name').textContent = stores[storeId].name + ' POS';
   setStatus(`Loading ${storeName()} data...`, 'warning');
 
-  // Load products and users in parallel for better performance
   await Promise.all([loadProducts(), loadUsers()]);
-  
-  // Process any pending sync items
   processQueue();
 }
 
 async function loadUsers() {
   try {
     console.log(`Loading users for store: ${storeName()}`);
+    setStatus('Loading users...', 'warning');
     
-    // Use currentStore ID instead of store name
     const res = await apiRequest('users', { store: currentStore });
     
     console.log('Users API response:', res);
     
-    // Handle different response formats
-    if (res && res.data && Array.isArray(res.data)) {
+    if (res && res.ok && Array.isArray(res.data)) {
       users = res.data;
-      console.log(`Loaded ${users.length} users from API (data property)`);
-    } else if (res && res.users && Array.isArray(res.users)) {
-      users = res.users;
-      console.log(`Loaded ${users.length} users from API (users property)`);
-    } else if (res && Array.isArray(res)) {
-      users = res;
-      console.log(`Loaded ${users.length} users from API (direct array)`);
+      console.log(`Loaded ${users.length} users from API`);
     } else {
       users = [];
       console.warn('No users data in response:', res);
     }
     
-    // Always populate selects, even if empty
     populateUserSelects();
     
     if (users.length === 0) {
@@ -277,31 +258,25 @@ async function loadUsers() {
     console.error('loadUsers error:', error);
     users = [];
     populateUserSelects();
-    setStatus('Error loading users from sheet', 'error');
+    setStatus('Error loading users', 'error');
   }
 }
 
 async function loadProducts() {
   try {
     console.log(`Loading products for store: ${storeName()}`);
+    setStatus('Loading products...', 'warning');
+    
     const res = await apiRequest('products', { store: currentStore });
 
-    if (!res || !res.ok) {
-      console.log('API failed, using demo products');
-      loadDemoProducts();
-      return;
-    }
-
-    if (!Array.isArray(res.data) || res.data.length === 0) {
-      console.log('No products from API, using demo products');
+    if (!res || !res.ok || !Array.isArray(res.data) || res.data.length === 0) {
+      console.log('No products from API');
       loadDemoProducts();
       return;
     }
 
     console.log(`Received ${res.data.length} products from API`);
-    console.log('First product sample:', res.data[0]);
-
-    // Map products from API response
+    
     products = res.data.map((p, index) => ({
       id: p.productId || index,
       name: p.productName,
@@ -310,14 +285,13 @@ async function loadProducts() {
         dz: Number(p.priceDz) || 0,
         pc: Number(p.pricePc) || 0
       },
-      stock: p.stock || 0,
+      stock: 0,
       stockStore1: Number(p.stockOneStop) || 0,
       stockStore2: Number(p.stockGolden) || 0,
       countingUnit: p.countingUnit || 'pc'
     }));
 
     console.log(`Mapped ${products.length} products`);
-    console.log('First mapped product:', products[0]);
     
     populateSalesDatalist();
     populateAdjustmentDatalist();
@@ -336,7 +310,6 @@ function loadDemoProducts() {
       id: '1',
       name: 'Notebook A4',
       prices: { ct: 5000, dz: 48000, pc: 550 },
-      stock: 100,
       stockStore1: 45,
       stockStore2: 55,
       countingUnit: 'pc'
@@ -345,7 +318,6 @@ function loadDemoProducts() {
       id: '2',
       name: 'Pen Blue',
       prices: { ct: 2500, dz: 24000, pc: 250 },
-      stock: 200,
       stockStore1: 120,
       stockStore2: 80,
       countingUnit: 'pc'
@@ -354,7 +326,6 @@ function loadDemoProducts() {
       id: '3',
       name: 'Eraser',
       prices: { ct: 1000, dz: 9000, pc: 100 },
-      stock: 150,
       stockStore1: 90,
       stockStore2: 60,
       countingUnit: 'pc'
@@ -362,7 +333,7 @@ function loadDemoProducts() {
   ];
   
   console.log(`Loaded ${products.length} DEMO products`);
-  setStatus('Using DEMO products', 'warning');
+  setStatus('Using DEMO products (API unavailable)', 'warning');
   
   populateSalesDatalist();
   populateAdjustmentDatalist();
@@ -385,14 +356,12 @@ function populateUserSelects() {
 
     users.forEach(user => {
       const option = document.createElement('option');
-      option.value = user.username || user.name || user.email;
-      option.textContent = user.role
-        ? `${user.username || user.name} (${user.role})`
-        : (user.username || user.name);
+      option.value = user.username;
+      option.textContent = user.role ? `${user.username} (${user.role})` : user.username;
       select.appendChild(option);
     });
 
-    if (remembered && users.some(u => (u.username || u.name) === remembered)) {
+    if (remembered && users.some(u => u.username === remembered)) {
       select.value = remembered;
     }
 
@@ -405,7 +374,7 @@ function populateUserSelects() {
     };
   });
 
-  if (remembered && users.some(u => (u.username || u.name) === remembered)) {
+  if (remembered && users.some(u => u.username === remembered)) {
     mirrorSelectedUser(remembered);
   }
 }
@@ -501,11 +470,8 @@ function updatePrice() {
   const unit = document.getElementById('unit').value;
   const product = products.find(p => p.name.toLowerCase() === itemName);
 
-  console.log(`updatePrice - Item: ${itemName}, Unit: ${unit}, Product found: ${!!product}`);
-
   if (product && product.prices) {
     const priceValue = product.prices[unit] || 0;
-    console.log(`Price for ${unit}: ${priceValue}`);
     document.getElementById('price').value = priceValue > 0 ? formatMoney(priceValue) : '';
   } else {
     document.getElementById('price').value = '';
@@ -691,7 +657,9 @@ function submitAllSales() {
 
 async function showStockLevels() {
   try {
+    setStatus('Loading stock levels...', 'warning');
     const res = await apiRequest('stock', {});
+    
     if (!res.ok) {
       setStatus('Could not load stock', 'error');
       return;
@@ -712,6 +680,7 @@ async function showStockLevels() {
         populateStockTable(filtered);
       };
     }
+    setStatus('Stock levels loaded', 'success');
   } catch (error) {
     console.error(error);
     setStatus('Failed to load stock levels', 'error');
@@ -956,20 +925,11 @@ function submitExpense() {
   clearPin(pinId);
   hideExpenseModal();
   
-  // Reset expense form
   document.getElementById('expense-category').value = '';
   document.getElementById('expense-amount').value = '';
   document.getElementById('expense-description').value = '';
 
   queueAndSync('cashout', payload, `Expense of ${formatMoney(amount)} queued.`);
-}
-
-// Debug function to test API connection
-async function testUsersAPI() {
-  console.log('Testing users API...');
-  const result = await apiRequest('users', { store: currentStore });
-  console.log('Test result:', result);
-  return result;
 }
 
 // DOM Event Listeners
@@ -1008,7 +968,7 @@ document.addEventListener('DOMContentLoaded', function() {
   console.log('POS System initialized');
 });
 
-// Expose functions to global scope for HTML onclick handlers
+// Expose functions to global scope
 window.selectStore = selectStore;
 window.removeSale = removeSale;
 window.clearAllSales = clearAllSales;
@@ -1027,4 +987,3 @@ window.submitStockAdjustment = submitStockAdjustment;
 window.showExpenseModal = showExpenseModal;
 window.hideExpenseModal = hideExpenseModal;
 window.submitExpense = submitExpense;
-window.testUsersAPI = testUsersAPI;
