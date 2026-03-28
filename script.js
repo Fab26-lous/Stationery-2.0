@@ -116,39 +116,31 @@ async function apiRequest(action, data = {}) {
     let response;
     const url = new URL(POS_API_URL);
 
-    const getActions = ['health', 'products', 'stock', 'users'];
-    const postActions = ['sales', 'adjustments', 'cashout'];
+    // Define which actions are GET vs POST
+    const getActions = ['health', 'products', 'stock'];
+    const postActions = ['sales', 'adjustments', 'cashout', 'users'];
 
     if (getActions.includes(action)) {
       url.searchParams.set('action', action);
-
+      
       if (data.store) {
         url.searchParams.set('store', data.store);
       }
-
+      
       response = await fetch(url.toString(), {
         method: 'GET',
         headers: { Accept: 'application/json' }
       });
-
-    } else if (postActions.includes(action)) {
-      const payload = { action, ...data };
-
-      response = await fetch(POS_API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8'
-        },
-        body: JSON.stringify(payload)
-      });
-
     } else {
+      // Use POST for all other actions including 'users'
       const payload = { action, ...data };
-
+      
+      console.log(`Sending POST request with payload:`, payload);
+      
       response = await fetch(POS_API_URL, {
         method: 'POST',
         headers: {
-          'Content-Type': 'text/plain;charset=utf-8'
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify(payload)
       });
@@ -162,7 +154,7 @@ async function apiRequest(action, data = {}) {
       result = JSON.parse(text);
     } catch (parseErr) {
       console.error('JSON Parse Error:', parseErr);
-      throw new Error(`Server did not return valid JSON: ${text}`);
+      throw new Error(`Server did not return valid JSON: ${text.substring(0, 200)}`);
     }
 
     if (!response.ok) {
@@ -241,33 +233,46 @@ async function selectStore(storeId) {
   document.getElementById('store-name').textContent = stores[storeId].name + ' POS';
   setStatus(`Loading ${storeName()} data...`, 'warning');
 
+  // Load products and users in parallel for better performance
   await Promise.all([loadProducts(), loadUsers()]);
+  
+  // Process any pending sync items
   processQueue();
 }
+
 async function loadUsers() {
   try {
     console.log(`Loading users for store: ${storeName()}`);
-
-    const res = await apiRequest('users', { store: storeName() });
-
-    if (!res || !res.ok) {
+    
+    // Use currentStore ID instead of store name
+    const res = await apiRequest('users', { store: currentStore });
+    
+    console.log('Users API response:', res);
+    
+    // Handle different response formats
+    if (res && res.data && Array.isArray(res.data)) {
+      users = res.data;
+      console.log(`Loaded ${users.length} users from API (data property)`);
+    } else if (res && res.users && Array.isArray(res.users)) {
+      users = res.users;
+      console.log(`Loaded ${users.length} users from API (users property)`);
+    } else if (res && Array.isArray(res)) {
+      users = res;
+      console.log(`Loaded ${users.length} users from API (direct array)`);
+    } else {
       users = [];
-      populateUserSelects();
-      setStatus(res?.error || 'Failed to load users from sheet', 'error');
-      return;
+      console.warn('No users data in response:', res);
     }
-
-    users = Array.isArray(res.data) ? res.data : [];
-
-    if (!users.length) {
-      populateUserSelects();
-      setStatus(`No active users found for ${storeName()}`, 'warning');
-      return;
-    }
-
-    console.log(`Loaded ${users.length} users from API`);
+    
+    // Always populate selects, even if empty
     populateUserSelects();
-    setStatus(`Loaded ${users.length} user(s)`, 'success');
+    
+    if (users.length === 0) {
+      setStatus(`No active users found for ${storeName()}`, 'warning');
+    } else {
+      setStatus(`Loaded ${users.length} user(s)`, 'success');
+    }
+    
   } catch (error) {
     console.error('loadUsers error:', error);
     users = [];
@@ -279,7 +284,7 @@ async function loadUsers() {
 async function loadProducts() {
   try {
     console.log(`Loading products for store: ${storeName()}`);
-    const res = await apiRequest('products', { store: storeName() });
+    const res = await apiRequest('products', { store: currentStore });
 
     if (!res || !res.ok) {
       console.log('API failed, using demo products');
@@ -380,14 +385,14 @@ function populateUserSelects() {
 
     users.forEach(user => {
       const option = document.createElement('option');
-      option.value = user.username;
+      option.value = user.username || user.name || user.email;
       option.textContent = user.role
-        ? `${user.username} (${user.role})`
-        : user.username;
+        ? `${user.username || user.name} (${user.role})`
+        : (user.username || user.name);
       select.appendChild(option);
     });
 
-    if (remembered && users.some(u => u.username === remembered)) {
+    if (remembered && users.some(u => (u.username || u.name) === remembered)) {
       select.value = remembered;
     }
 
@@ -400,7 +405,7 @@ function populateUserSelects() {
     };
   });
 
-  if (remembered && users.some(u => u.username === remembered)) {
+  if (remembered && users.some(u => (u.username || u.name) === remembered)) {
     mirrorSelectedUser(remembered);
   }
 }
@@ -534,20 +539,6 @@ function resetForm() {
   if (box) box.textContent = 'Select an item to view stock';
 }
 
-// Handle form submission
-document.addEventListener('DOMContentLoaded', function() {
-  const saleForm = document.getElementById('sale-form');
-  if (saleForm) {
-    saleForm.addEventListener('submit', function(e) {
-      e.preventDefault();
-      addToSale();
-    });
-  }
-  
-  attachMoneyFormatting();
-  console.log('POS System initialized');
-});
-
 function addToSale() {
   const item = document.getElementById('item').value.trim();
   const unit = document.getElementById('unit').value;
@@ -596,7 +587,7 @@ function updateSalesTable() {
   tbody.innerHTML = '';
 
   if (!currentSales.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="muted">No items added yet</td> </tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="muted">No items added yet</td></tr>';
   } else {
     let grandTotal = 0;
 
@@ -907,7 +898,7 @@ function submitStockAdjustment() {
     store: storeName(),
     submittedBy,
     userPin,
-    items: adjustmentItems,  // Note: backend expects 'items'
+    items: adjustmentItems,
     timestamp: new Date().toISOString()
   };
 
@@ -959,7 +950,7 @@ function submitExpense() {
     paymentMethod,
     description,
     timestamp: new Date().toISOString(),
-    cashoutType: 'Operating_Expense'  // Add this for the backend
+    cashoutType: 'Operating_Expense'
   };
 
   clearPin(pinId);
@@ -973,8 +964,26 @@ function submitExpense() {
   queueAndSync('cashout', payload, `Expense of ${formatMoney(amount)} queued.`);
 }
 
-// Add event listeners for item selection
+// Debug function to test API connection
+async function testUsersAPI() {
+  console.log('Testing users API...');
+  const result = await apiRequest('users', { store: currentStore });
+  console.log('Test result:', result);
+  return result;
+}
+
+// DOM Event Listeners
 document.addEventListener('DOMContentLoaded', function() {
+  const saleForm = document.getElementById('sale-form');
+  if (saleForm) {
+    saleForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      addToSale();
+    });
+  }
+  
+  attachMoneyFormatting();
+  
   const itemInput = document.getElementById('item');
   if (itemInput) {
     itemInput.addEventListener('change', updatePrice);
@@ -995,4 +1004,27 @@ document.addEventListener('DOMContentLoaded', function() {
   if (adjustmentSearch) {
     adjustmentSearch.addEventListener('input', updateAdjustmentStockInfo);
   }
+  
+  console.log('POS System initialized');
 });
+
+// Expose functions to global scope for HTML onclick handlers
+window.selectStore = selectStore;
+window.removeSale = removeSale;
+window.clearAllSales = clearAllSales;
+window.submitAllSales = submitAllSales;
+window.showStockLevels = showStockLevels;
+window.hideStockLevels = hideStockLevels;
+window.showStockAdjustment = showStockAdjustment;
+window.hideStockAdjustment = hideStockAdjustment;
+window.addItemToAdjustment = addItemToAdjustment;
+window.updateAdjustmentUnit = updateAdjustmentUnit;
+window.updateAdjustmentType = updateAdjustmentType;
+window.updateAdjustmentQuantity = updateAdjustmentQuantity;
+window.removeAdjustmentItem = removeAdjustmentItem;
+window.clearAdjustments = clearAdjustments;
+window.submitStockAdjustment = submitStockAdjustment;
+window.showExpenseModal = showExpenseModal;
+window.hideExpenseModal = hideExpenseModal;
+window.submitExpense = submitExpense;
+window.testUsersAPI = testUsersAPI;
