@@ -1,4 +1,4 @@
-const POS_API_URL = 'https://script.google.com/macros/s/AKfycbxCazntgLyxTwlB285oipfLNGAZ6oK0PnFaxCzLdYkVGA_07q3Wx8RCA5HmI9xJ-fR4uA/exec'; // Replace with your actual URL
+const POS_API_URL = 'YOUR_DEPLOYED_URL_HERE'; // Replace with your actual URL
 const LOCAL_QUEUE_KEY = 'stationery_pos_sync_queue_v4';
 const LAST_SELECTED_USER_KEY = 'stationery_pos_last_user_v1';
 
@@ -107,51 +107,80 @@ function handleMoneyBlur() {
   }
 }
 
-async function apiRequest(action, data = {}) {
-  console.log(`API Request: ${action}`, data);
-
-  try {
-    let url = `${POS_API_URL}?action=${action}`;
-    let options = {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-      }
+// JSONP function for GET requests
+function jsonpRequest(url, callbackName) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    const callbackFunction = `jsonp_callback_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    window[callbackFunction] = function(data) {
+      delete window[callbackFunction];
+      document.body.removeChild(script);
+      resolve(data);
     };
     
-    // For POST actions, use POST method
+    const separator = url.includes('?') ? '&' : '?';
+    script.src = `${url}${separator}callback=${callbackFunction}`;
+    script.onerror = () => {
+      delete window[callbackFunction];
+      document.body.removeChild(script);
+      reject(new Error('JSONP request failed'));
+    };
+    
+    document.body.appendChild(script);
+  });
+}
+
+// API Request function that uses JSONP for GET and fetch for POST
+async function apiRequest(action, data = {}) {
+  console.log(`API Request: ${action}`, data);
+  
+  try {
+    // For GET requests, use JSONP (bypasses CORS)
+    const getActions = ['products', 'stock', 'users', 'health'];
+    
+    if (getActions.includes(action)) {
+      let url = `${POS_API_URL}?action=${action}`;
+      if (data.store) {
+        url += `&store=${data.store}`;
+      }
+      url += `&_=${Date.now()}`; // Cache busting
+      
+      console.log('JSONP Request URL:', url);
+      const result = await jsonpRequest(url);
+      console.log(`JSONP Response (${action}):`, result);
+      return result;
+    }
+    
+    // For POST requests, use fetch with CORS
     const postActions = ['sales', 'adjustments', 'cashout'];
     
     if (postActions.includes(action)) {
-      options.method = 'POST';
-      options.body = JSON.stringify({ action, ...data });
-    } else if (data.store) {
-      url += `&store=${data.store}`;
+      const payload = { action, ...data };
+      
+      console.log('POST Request payload:', payload);
+      
+      const response = await fetch(POS_API_URL, {
+        method: 'POST',
+        mode: 'cors',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      const text = await response.text();
+      console.log(`POST Response (${action}):`, text);
+      
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        return { ok: false, error: 'Invalid response' };
+      }
     }
     
-    // Add cache-busting
-    url += `&_=${Date.now()}`;
-    
-    console.log('Fetching:', url);
-    const response = await fetch(url, options);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const text = await response.text();
-    console.log(`API Response (${action}):`, text);
-    
-    let result;
-    try {
-      result = JSON.parse(text);
-    } catch (parseErr) {
-      console.error('JSON Parse Error:', parseErr);
-      throw new Error(`Invalid JSON response: ${text.substring(0, 200)}`);
-    }
-    
-    return result;
+    return { ok: false, error: 'Unknown action' };
     
   } catch (error) {
     console.error('API Request Error:', error);
@@ -162,22 +191,22 @@ async function apiRequest(action, data = {}) {
 
 async function processQueue() {
   if (isSyncing) return;
-
+  
   const queue = getQueue();
   if (!queue.length) {
     setStatus('Ready', 'success');
     return;
   }
-
+  
   isSyncing = true;
-
+  
   try {
     setStatus(`Syncing ${queue.length} pending item(s)...`, 'warning');
-
+    
     for (const job of queue) {
       console.log(`Processing queue item: ${job.action}`, job.payload);
       const result = await apiRequest(job.action, job.payload);
-
+      
       if (result && result.ok) {
         removeFromQueue(job.id);
         console.log(`Successfully synced: ${job.action}`);
@@ -187,10 +216,10 @@ async function processQueue() {
         return;
       }
     }
-
+    
     updatePendingBadge();
     setStatus('All pending data synced successfully', 'success');
-
+    
     if (currentStore) {
       loadProducts();
       loadUsers();
@@ -206,7 +235,7 @@ async function processQueue() {
 function queueAndSync(action, payload, successMessage) {
   addToQueue(action, payload);
   setStatus(successMessage + ' Saved locally. Will sync when online.', 'success');
-  setTimeout(processQueue, 5000); // Retry after 5 seconds
+  setTimeout(processQueue, 5000);
 }
 
 function showSection(id) {
@@ -224,7 +253,7 @@ async function selectStore(storeId) {
   showSection('pos-container');
   document.getElementById('store-name').textContent = stores[storeId].name + ' POS';
   setStatus(`Loading ${storeName()} data...`, 'warning');
-
+  
   await Promise.all([loadProducts(), loadUsers()]);
   processQueue();
 }
@@ -268,13 +297,15 @@ async function loadProducts() {
     setStatus('Loading products...', 'warning');
     
     const res = await apiRequest('products', { store: currentStore });
-
+    
+    console.log('Products API response:', res);
+    
     if (!res || !res.ok || !Array.isArray(res.data) || res.data.length === 0) {
       console.log('No products from API');
       loadDemoProducts();
       return;
     }
-
+    
     console.log(`Received ${res.data.length} products from API`);
     
     products = res.data.map((p, index) => ({
@@ -290,7 +321,7 @@ async function loadProducts() {
       stockStore2: Number(p.stockGolden) || 0,
       countingUnit: p.countingUnit || 'pc'
     }));
-
+    
     console.log(`Mapped ${products.length} products`);
     
     populateSalesDatalist();
@@ -345,26 +376,26 @@ function populateUserSelects() {
     'adjustment-submitted-by',
     'expense-submitted-by'
   ];
-
+  
   const remembered = localStorage.getItem(LAST_SELECTED_USER_KEY + '_' + storeName()) || '';
-
+  
   selectIds.forEach(id => {
     const select = document.getElementById(id);
     if (!select) return;
-
+    
     select.innerHTML = '<option value="">Select employee</option>';
-
+    
     users.forEach(user => {
       const option = document.createElement('option');
       option.value = user.username;
       option.textContent = user.role ? `${user.username} (${user.role})` : user.username;
       select.appendChild(option);
     });
-
+    
     if (remembered && users.some(u => u.username === remembered)) {
       select.value = remembered;
     }
-
+    
     select.onchange = function () {
       const selectedUser = this.value || '';
       if (selectedUser) {
@@ -373,7 +404,7 @@ function populateUserSelects() {
       }
     };
   });
-
+  
   if (remembered && users.some(u => u.username === remembered)) {
     mirrorSelectedUser(remembered);
   }
@@ -383,7 +414,7 @@ function mirrorSelectedUser(username) {
   ['sales-submitted-by', 'adjustment-submitted-by', 'expense-submitted-by'].forEach(id => {
     const select = document.getElementById(id);
     if (!select) return;
-
+    
     const exists = Array.from(select.options).some(o => o.value === username);
     if (exists && select.value !== username) {
       select.value = username;
@@ -399,7 +430,7 @@ function populateSalesDatalist() {
   }
   dl.innerHTML = '';
   console.log(`Populating sales datalist with ${products.length} products`);
-
+  
   products.forEach(p => {
     const opt = document.createElement('option');
     opt.value = p.name;
@@ -411,7 +442,7 @@ function populateAdjustmentDatalist() {
   const dl = document.getElementById('adjustment-item-list');
   if (!dl) return;
   dl.innerHTML = '';
-
+  
   products.forEach(p => {
     const opt = document.createElement('option');
     opt.value = p.name;
@@ -423,22 +454,22 @@ function updateSelectedStockInfo() {
   const itemName = document.getElementById('item')?.value.trim().toLowerCase();
   const box = document.getElementById('selected-stock-info');
   if (!box) return;
-
+  
   if (!itemName) {
     box.textContent = 'Select an item to view stock';
     return;
   }
-
+  
   const product = products.find(p => p.name.toLowerCase() === itemName);
   if (!product) {
     box.textContent = 'Product not found';
     return;
   }
-
+  
   const currentStoreStock = currentStore === 'store1' ? product.stockStore1 : product.stockStore2;
   const otherStoreStock = currentStore === 'store1' ? product.stockStore2 : product.stockStore1;
   const otherStoreName = currentStore === 'store1' ? 'Golden' : 'One Stop';
-
+  
   box.textContent = `Current stock here: ${formatMoney(currentStoreStock)} | ${otherStoreName}: ${formatMoney(otherStoreStock)}`;
 }
 
@@ -446,22 +477,22 @@ function updateAdjustmentStockInfo() {
   const itemName = document.getElementById('adjustment-search')?.value.trim().toLowerCase();
   const box = document.getElementById('adjustment-stock-info');
   if (!box) return;
-
+  
   if (!itemName) {
     box.textContent = 'Search an item to view stock';
     return;
   }
-
+  
   const product = products.find(p => p.name.toLowerCase() === itemName);
   if (!product) {
     box.textContent = 'Product not found';
     return;
   }
-
+  
   const currentStoreStock = currentStore === 'store1' ? product.stockStore1 : product.stockStore2;
   const otherStoreStock = currentStore === 'store1' ? product.stockStore2 : product.stockStore1;
   const otherStoreName = currentStore === 'store1' ? 'Golden' : 'One Stop';
-
+  
   box.textContent = `Current stock here: ${formatMoney(currentStoreStock)} | ${otherStoreName}: ${formatMoney(otherStoreStock)}`;
 }
 
@@ -469,7 +500,7 @@ function updatePrice() {
   const itemName = document.getElementById('item').value.trim().toLowerCase();
   const unit = document.getElementById('unit').value;
   const product = products.find(p => p.name.toLowerCase() === itemName);
-
+  
   if (product && product.prices) {
     const priceValue = product.prices[unit] || 0;
     document.getElementById('price').value = priceValue > 0 ? formatMoney(priceValue) : '';
@@ -487,7 +518,7 @@ function calculateTotal() {
   const discount = parseMoney(document.getElementById('discount').value);
   const extra = parseMoney(document.getElementById('extra').value);
   const total = (quantity * price) - discount + extra;
-
+  
   document.getElementById('total').value = formatMoney(total);
   return total;
 }
@@ -514,22 +545,22 @@ function addToSale() {
   const extra = parseMoney(document.getElementById('extra').value);
   const paymentMethod = document.getElementById('payment-method').value;
   const total = (quantity * price) - discount + extra;
-
+  
   if (!item) {
     setStatus('Please select an item', 'error');
     return;
   }
-
+  
   if (!quantity || quantity <= 0) {
     setStatus('Please enter a valid quantity', 'error');
     return;
   }
-
+  
   if (!price || price <= 0) {
     setStatus('Please enter a valid price', 'error');
     return;
   }
-
+  
   currentSales.push({
     item,
     unit,
@@ -540,7 +571,7 @@ function addToSale() {
     total,
     paymentMethod
   });
-
+  
   updateSalesTable();
   resetForm();
   setStatus(`Added ${quantity} ${unit} of ${item} to sale`, 'success');
@@ -549,14 +580,14 @@ function addToSale() {
 function updateSalesTable() {
   const tbody = document.querySelector('#sales-table tbody');
   if (!tbody) return;
-
+  
   tbody.innerHTML = '';
-
+  
   if (!currentSales.length) {
     tbody.innerHTML = '<tr><td colspan="10" class="muted">No items added yet</td></tr>';
   } else {
     let grandTotal = 0;
-
+    
     currentSales.forEach((sale, index) => {
       grandTotal += sale.total;
       const tr = document.createElement('tr');
@@ -574,7 +605,7 @@ function updateSalesTable() {
       `;
       tbody.appendChild(tr);
     });
-
+    
     const totalRow = document.createElement('tr');
     totalRow.innerHTML = `
       <td colspan="7" style="text-align:right;"><strong>Grand Total</strong></td>
@@ -583,10 +614,10 @@ function updateSalesTable() {
     `;
     tbody.appendChild(totalRow);
   }
-
+  
   const submitBtn = document.getElementById('submit-all-btn');
   const clearBtn = document.getElementById('clear-all-btn');
-
+  
   if (submitBtn) submitBtn.classList.toggle('hidden', !currentSales.length);
   if (clearBtn) clearBtn.classList.toggle('hidden', !currentSales.length);
 }
@@ -609,16 +640,16 @@ function getSubmitIdentity(type) {
     adjustments: 'adjustment-submitted-by',
     cashout: 'expense-submitted-by'
   }[type];
-
+  
   const pinId = {
     sales: 'sales-pin',
     adjustments: 'adjustment-pin',
     cashout: 'expense-pin'
   }[type];
-
+  
   const submittedBy = document.getElementById(selectId)?.value || '';
   const userPin = document.getElementById(pinId)?.value || '';
-
+  
   return { submittedBy, userPin, pinId };
 }
 
@@ -632,13 +663,13 @@ function submitAllSales() {
     setStatus('No items to submit', 'error');
     return;
   }
-
+  
   const { submittedBy, userPin, pinId } = getSubmitIdentity('sales');
   if (!submittedBy || !userPin) {
     setStatus('Select employee and enter PIN before submitting sales', 'error');
     return;
   }
-
+  
   const payload = {
     store: storeName(),
     submittedBy,
@@ -646,12 +677,12 @@ function submitAllSales() {
     items: currentSales,
     timestamp: new Date().toISOString()
   };
-
+  
   const count = currentSales.length;
   currentSales = [];
   updateSalesTable();
   clearPin(pinId);
-
+  
   queueAndSync('sales', payload, `${count} sales line(s) queued.`);
 }
 
@@ -664,11 +695,11 @@ async function showStockLevels() {
       setStatus('Could not load stock', 'error');
       return;
     }
-
+    
     allStoreProducts = res.data || [];
     populateStockTable(allStoreProducts);
     document.getElementById('stock-modal').style.display = 'flex';
-
+    
     const searchInput = document.getElementById('stock-search');
     if (searchInput) {
       searchInput.value = '';
@@ -694,18 +725,18 @@ function hideStockLevels() {
 function populateStockTable(list) {
   const tbody = document.getElementById('stock-table-body');
   if (!tbody) return;
-
+  
   tbody.innerHTML = '';
-
+  
   let outCount = 0;
   let lowCount = 0;
-
+  
   list.forEach(p => {
     const one = Number(p.stockOneStop) || 0;
     const two = Number(p.stockGolden) || 0;
     let label = 'OK';
     let cls = 'status-ok';
-
+    
     if (one <= 0 && two <= 0) {
       label = 'OUT';
       cls = 'status-out';
@@ -715,7 +746,7 @@ function populateStockTable(list) {
       cls = 'status-low';
       lowCount++;
     }
-
+    
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${p.productName}</td>
@@ -725,7 +756,7 @@ function populateStockTable(list) {
     `;
     tbody.appendChild(tr);
   });
-
+  
   const summary = document.getElementById('stock-summary');
   if (summary) {
     summary.textContent = `Products: ${list.length} | Out: ${outCount} | Low: ${lowCount}`;
@@ -737,15 +768,15 @@ function showStockAdjustment() {
   document.getElementById('adjustment-store-name').textContent = storeName();
   updateAdjustmentTable();
   document.getElementById('stock-adjustment-modal').style.display = 'flex';
-
+  
   const input = document.getElementById('adjustment-search');
   const info = document.getElementById('adjustment-stock-info');
-
+  
   if (input) {
     input.value = '';
     input.focus();
   }
-
+  
   if (info) {
     info.textContent = 'Search an item to view stock';
   }
@@ -758,24 +789,24 @@ function hideStockAdjustment() {
 function addItemToAdjustment() {
   const name = document.getElementById('adjustment-search').value.trim();
   const p = products.find(x => x.name.toLowerCase() === name.toLowerCase());
-
+  
   if (!p) {
     setStatus('Product not found', 'error');
     return;
   }
-
+  
   if (adjustmentItems.some(x => x.name === p.name)) {
     setStatus('Item already added', 'warning');
     return;
   }
-
+  
   adjustmentItems.push({
     name: p.name,
     unit: 'pc',
     adjustmentType: 'add',
     quantity: 0
   });
-
+  
   document.getElementById('adjustment-search').value = '';
   updateAdjustmentTable();
   setStatus('Item added to stock adjustment', 'success');
@@ -784,11 +815,11 @@ function addItemToAdjustment() {
 function updateAdjustmentTable() {
   const tbody = document.getElementById('adjustment-table-body');
   if (!tbody) return;
-
+  
   tbody.innerHTML = '';
-
+  
   if (!adjustmentItems.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="muted">No items added yet</td></tr>';
+    tbody.innerHTML = 'tr<td colspan="5" class="muted">No items added yet</td></tr>';
   } else {
     adjustmentItems.forEach((item, index) => {
       const tr = document.createElement('tr');
@@ -815,7 +846,7 @@ function updateAdjustmentTable() {
       tbody.appendChild(tr);
     });
   }
-
+  
   const summary = document.getElementById('adjustment-summary');
   if (summary) {
     summary.textContent = `Items to adjust: ${adjustmentItems.length}`;
@@ -856,13 +887,13 @@ function submitStockAdjustment() {
     setStatus('No adjustments to submit', 'error');
     return;
   }
-
+  
   const { submittedBy, userPin, pinId } = getSubmitIdentity('adjustments');
   if (!submittedBy || !userPin) {
     setStatus('Select employee and enter PIN', 'error');
     return;
   }
-
+  
   const payload = {
     store: storeName(),
     submittedBy,
@@ -870,12 +901,12 @@ function submitStockAdjustment() {
     items: adjustmentItems,
     timestamp: new Date().toISOString()
   };
-
+  
   const count = adjustmentItems.length;
   adjustmentItems = [];
   updateAdjustmentTable();
   clearPin(pinId);
-
+  
   queueAndSync('adjustments', payload, `${count} adjustment(s) queued.`);
   hideStockAdjustment();
 }
@@ -893,23 +924,23 @@ function submitExpense() {
   const amount = parseMoney(document.getElementById('expense-amount').value);
   const paymentMethod = document.getElementById('expense-payment').value;
   const description = document.getElementById('expense-description').value.trim();
-
+  
   if (!category) {
     setStatus('Please enter an expense category', 'error');
     return;
   }
-
+  
   if (!amount || amount <= 0) {
     setStatus('Please enter a valid amount', 'error');
     return;
   }
-
+  
   const { submittedBy, userPin, pinId } = getSubmitIdentity('cashout');
   if (!submittedBy || !userPin) {
     setStatus('Select employee and enter PIN', 'error');
     return;
   }
-
+  
   const payload = {
     store: storeName(),
     submittedBy,
@@ -921,14 +952,14 @@ function submitExpense() {
     timestamp: new Date().toISOString(),
     cashoutType: 'Operating_Expense'
   };
-
+  
   clearPin(pinId);
   hideExpenseModal();
   
   document.getElementById('expense-category').value = '';
   document.getElementById('expense-amount').value = '';
   document.getElementById('expense-description').value = '';
-
+  
   queueAndSync('cashout', payload, `Expense of ${formatMoney(amount)} queued.`);
 }
 
